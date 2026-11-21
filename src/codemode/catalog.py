@@ -63,10 +63,51 @@ class RejectedTool:
     reason: str
 
 
+#: Nama tipe bersama untuk envelope MCP. Dipancarkan SEKALI, lalu di-`extends`
+#: oleh tiap interface Output. Tanpa ini, 58% deklarasi adalah boilerplate yang
+#: sama diulang per tool (terukur: 24.926 dari 43.281 char pada 60 tool).
+MCP_BASE = "McpResultBase"
+
+SHARED_PREFIX = "#/shared/"
+
+MCP_BASE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "content": {
+            "description": (
+                "Blok konten MCP. Teksnya biasanya sama dengan "
+                "structuredContent, hanya sudah dirender."
+            ),
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["type"],
+                "additionalProperties": True,
+            },
+        },
+        "isError": {
+            "description": (
+                "Selalu false di sini - kegagalan tool dilempar sebagai "
+                "exception, jadi tidak perlu diperiksa."
+            ),
+            "type": "boolean",
+        },
+    },
+    "required": ["content"],
+}
+
+
 @dataclass
 class Catalog:
     tools: list[ToolSpec] = field(default_factory=list)
     rejected: list[RejectedTool] = field(default_factory=list)
+    #: Schema bernama yang dipancarkan sekali dan dirujuk lewat
+    #: `$ref: "#/shared/<nama>"`. Codegen tidak perlu tahu isinya soal MCP.
+    shared: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def servers(self) -> list[str]:
@@ -139,38 +180,24 @@ def mcp_envelope(output_schema: dict[str, Any] | None) -> dict[str, Any]:
         "type": "object",
         "additionalProperties": True,
     }
+    # Bentuk `allOf [$ref bersama, properti lokal]` - komposisi JSON Schema
+    # standar. Codegen menerjemahkannya jadi `interface X extends Base { ... }`,
+    # jadi bagian yang sama tidak diulang per tool.
     return {
-        "type": "object",
-        "properties": {
-            "content": {
-                "description": (
-                    "Blok konten MCP. Teksnya biasanya sama dengan "
-                    "structuredContent, hanya sudah dirender."
-                ),
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string"},
-                        "text": {"type": "string"},
-                    },
-                    "required": ["type"],
-                    "additionalProperties": True,
+        "allOf": [
+            {"$ref": f"{SHARED_PREFIX}{MCP_BASE}"},
+            {
+                "type": "object",
+                "properties": {
+                    "structuredContent": {
+                        **structured,
+                        "description": (
+                            "Payload terstruktur sesuai outputSchema tool."
+                        ),
+                    }
                 },
             },
-            "structuredContent": {
-                **structured,
-                "description": "Payload terstruktur sesuai outputSchema tool.",
-            },
-            "isError": {
-                "description": (
-                    "Selalu false di sini - kegagalan tool dilempar sebagai "
-                    "exception, jadi tidak perlu diperiksa."
-                ),
-                "type": "boolean",
-            },
-        },
-        "required": ["content"],
+        ]
     }
 
 
@@ -245,7 +272,10 @@ async def build_catalog(
             if reason:
                 catalog.rejected.append(RejectedTool(server, tool.name, reason))
                 continue
-            catalog.tools.append(spec_from_tool(tool, server))
+            spec = spec_from_tool(tool, server)
+            catalog.tools.append(spec)
+            if spec.output_schema and "allOf" in spec.output_schema:
+                catalog.shared.setdefault(MCP_BASE, MCP_BASE_SCHEMA)
     return catalog
 
 

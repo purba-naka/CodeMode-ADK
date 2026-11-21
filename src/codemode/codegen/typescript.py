@@ -20,7 +20,7 @@ import keyword
 import re
 from typing import Any
 
-from codemode.catalog import Catalog, ToolSpec, _defs_of
+from codemode.catalog import SHARED_PREFIX, Catalog, ToolSpec, _defs_of
 
 UNKNOWN = "unknown"
 LOOSE_OBJECT = "{ [key: string]: any }"
@@ -115,8 +115,13 @@ def ts_type(
     if depth > _MAX_DEPTH or not isinstance(schema, dict) or not schema:
         return UNKNOWN
 
-    # $ref lokal, dengan penjaga siklus
+    # $ref ke tipe bersama -> rujuk namanya saja (nominal), jangan di-inline.
+    # Inilah yang mencegah boilerplate yang sama diulang per tool.
     ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith(SHARED_PREFIX):
+        return ref[len(SHARED_PREFIX) :]
+
+    # $ref lokal, dengan penjaga siklus
     if isinstance(ref, str):
         key = ref.rsplit("/", 1)[-1]
         if key in seen:
@@ -229,6 +234,24 @@ def _iface_base(spec: ToolSpec, *, prefix_server: bool) -> str:
     return f"{head}{pascal(spec.name)}"
 
 
+def _split_all_of(schema: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    """`allOf: [{$ref bersama}, {objek lokal}]` -> (nama induk, objek lokal).
+
+    Komposisi JSON Schema standar; di TS jadi `interface X extends Induk`.
+    Bentuk lain dikembalikan sebagai (None, schema asli).
+    """
+    parts = schema.get("allOf")
+    if not isinstance(parts, list) or len(parts) != 2:
+        return None, schema
+    head, tail = parts
+    ref = head.get("$ref") if isinstance(head, dict) else None
+    if not (isinstance(ref, str) and ref.startswith(SHARED_PREFIX)):
+        return None, schema
+    if not isinstance(tail, dict):
+        return None, schema
+    return ref[len(SHARED_PREFIX) :], tail
+
+
 def _render_interfaces(spec: ToolSpec, *, prefix_server: bool) -> list[str]:
     base = _iface_base(spec, prefix_server=prefix_server)
     out: list[str] = []
@@ -240,13 +263,15 @@ def _render_interfaces(spec: ToolSpec, *, prefix_server: bool) -> list[str]:
     out.append(f"interface {base}Input {in_body}")
 
     if spec.output_schema:
-        out_defs = _defs_of(spec.output_schema)
-        out_body = ts_type(spec.output_schema, defs=out_defs)
+        parent, local = _split_all_of(spec.output_schema)
+        out_defs = _defs_of(local)
+        out_body = ts_type(local, defs=out_defs)
         if not out_body.startswith("{"):
             out_body = f"{{ [key: string]: any }} /* {out_body} */"
+        extends = f" extends {parent}" if parent else ""
+        out.append(f"interface {base}Output{extends} {out_body}")
     else:
-        out_body = LOOSE_OBJECT
-    out.append(f"interface {base}Output {out_body}")
+        out.append(f"interface {base}Output {LOOSE_OBJECT}")
     return out
 
 
@@ -276,6 +301,12 @@ def render(catalog: Catalog, *, flat: bool | None = None) -> str:
         "// Satu-satunya cara kode ini menyentuh dunia luar adalah lewat `tools`.",
         "",
     ]
+
+    for name, schema in catalog.shared.items():
+        body = ts_type(schema, defs=_defs_of(schema))
+        parts.append(f"interface {name} {body}")
+    if catalog.shared:
+        parts.append("")
 
     for spec in catalog.tools:
         parts += _render_interfaces(spec, prefix_server=prefix_server)

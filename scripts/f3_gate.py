@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -73,8 +74,13 @@ async def main() -> int:
     from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
     from mcp import StdioServerParameters
 
-    target = ROOT / "accessible_files"
-    target.mkdir(exist_ok=True)
+    # Direktori fixture sendiri, dibersihkan tiap jalan. Sebelumnya gerbang
+    # F1 dan F3 berbagi `accessible_files/`, jadi hasil F3 bergantung pada
+    # urutan eksekusi - berkas sisa dari F1 mengubah hitungannya.
+    target = ROOT / "build" / "fixtures_f3"
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
     (target / "kecil.txt").write_text("a\nb\n", encoding="utf-8")
     (target / "besar.txt").write_text("\n".join(f"baris {i}" for i in range(40)))
     (target / "sedang.txt").write_text("x\ny\nz\nw\n", encoding="utf-8")

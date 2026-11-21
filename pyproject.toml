@@ -32,3 +32,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Skrip entry-point menyisipkan sys.path sebelum import paket lokal.
+"eval/harness.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+# Tabel data uji lebih mudah dibaca sebagai satu baris per baris data.
+"eval/mock_server.py" = ["E501"]

@@ -72,8 +72,10 @@ async def main() -> int:
     from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
     from mcp import StdioServerParameters
 
-    target = ROOT / "accessible_files"
-    target.mkdir(exist_ok=True)
+    target = ROOT / "build" / "fixtures_f1"
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
     (target / "a.txt").write_text("satu\ndua\ntiga\n", encoding="utf-8")
 
     npx = "npx.cmd" if sys.platform == "win32" else "npx"

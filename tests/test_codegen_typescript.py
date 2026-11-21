@@ -5,7 +5,13 @@ import re
 import pytest
 
 from codemode.catalog import Catalog, SchemaSource, ToolSpec, strip_meta
-from codemode.codegen.typescript import escape_doc, pascal, render, ts_type
+from codemode.codegen.typescript import (
+    _split_all_of,
+    escape_doc,
+    pascal,
+    render,
+    ts_type,
+)
 
 
 def spec(name="do_thing", *, server="fs", desc="", inp=None, out=None) -> ToolSpec:
@@ -232,10 +238,15 @@ def test_strip_meta_tidak_rekursif():
 
 
 # ------------------------------------ envelope MCP (temuan Fase 3)
-def test_mcp_envelope_membungkus_output_schema():
+def test_mcp_envelope_memakai_tipe_bersama():
     """`outputSchema` MCP menjelaskan `structuredContent`, tapi ADK meneruskan
-    envelope `CallToolResult` utuh. Tipe harus cocok dengan nilai runtime."""
-    from codemode.catalog import mcp_envelope
+    envelope `CallToolResult` utuh. Tipe harus cocok dengan nilai runtime.
+
+    Bagian yang sama (`content`, `isError`) dipancarkan SEKALI sebagai tipe
+    bersama lalu di-`extends`. Terukur: tanpa dedup, 58% deklarasi adalah
+    boilerplate yang diulang per tool.
+    """
+    from codemode.catalog import MCP_BASE, MCP_BASE_SCHEMA, mcp_envelope
 
     env = mcp_envelope(
         {
@@ -244,20 +255,44 @@ def test_mcp_envelope_membungkus_output_schema():
             "required": ["content"],
         }
     )
-    out = ts_type(env)
-    assert "content: " in out  # blok MCP
-    assert "structuredContent?:" in out
-    assert "isError?: boolean;" in out
-    # payload bertipe ada di dalam structuredContent, bukan di level atas
-    assert out.index("structuredContent") < out.index("isError")
+    parent, local = _split_all_of(env)
+    assert parent == MCP_BASE
+    assert "structuredContent" in local["properties"]
+
+    # bagian bersama tidak boleh ikut ter-inline di tipe per-tool
+    body = ts_type(local)
+    assert "structuredContent?:" in body
+    assert "isError" not in body
+
+    # tapi tetap ada sekali di tipe bersama
+    shared = ts_type(MCP_BASE_SCHEMA)
+    assert "isError?: boolean;" in shared
+    assert "content: " in shared
 
 
 def test_mcp_envelope_tanpa_output_schema():
     from codemode.catalog import mcp_envelope
 
-    out = ts_type(mcp_envelope(None))
+    _parent, local = _split_all_of(mcp_envelope(None))
+    out = ts_type(local)
     assert "structuredContent?:" in out
     assert "[key: string]: any" in out
+
+
+def test_render_memancarkan_tipe_bersama_sekali():
+    from codemode.catalog import MCP_BASE, MCP_BASE_SCHEMA, mcp_envelope
+
+    specs = [
+        spec("a", out=mcp_envelope({"type": "object"})),
+        spec("b", out=mcp_envelope({"type": "object"})),
+    ]
+    cat = Catalog(tools=specs, shared={MCP_BASE: MCP_BASE_SCHEMA})
+    out = render(cat)
+
+    assert out.count(f"interface {MCP_BASE} ") == 1
+    assert out.count("isError?: boolean;") == 1
+    assert f"interface AOutput extends {MCP_BASE}" in out
+    assert f"interface BOutput extends {MCP_BASE}" in out
 
 
 def test_tool_non_mcp_tidak_dibungkus_envelope():
