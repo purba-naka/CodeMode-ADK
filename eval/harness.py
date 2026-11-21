@@ -41,7 +41,49 @@ from codemode.sandbox import Limits
 from eval.tasks import TASKS, Task
 
 PY = sys.executable
-MODEL = os.environ.get("EVAL_MODEL", "gemini-3.5-flash")
+
+
+def _load_dotenv() -> None:
+    """Baca `.env` tanpa dependensi tambahan. Kunci API TIDAK pernah masuk
+    source yang ter-commit; `.env` ada di .gitignore."""
+    f = ROOT / ".env"
+    if not f.exists():
+        return
+    for line in f.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_dotenv()
+
+LITELLM_BASE = os.environ.get("LITELLM_BASE_URL", "")
+#: Berkas yang diisi `eval/token_proxy.py`. Kalau ada, angka token diambil
+#: dari KABEL - bukan dari `usage_metadata` ADK, yang terbukti salah lewat
+#: LiteLlm (melaporkan 4107 untuk 10/30/60 tool sekaligus).
+WIRE_USAGE = Path(os.environ.get("WIRE_USAGE", "build/wire_usage.jsonl"))
+MODEL = os.environ.get(
+    "EVAL_MODEL", "ag/gemini-3.8-flash" if LITELLM_BASE else "gemini-3.5-flash"
+)
+
+
+def make_model() -> Any:
+    """Model untuk `LlmAgent`.
+
+    Dengan `LITELLM_BASE_URL` terisi, dipakai endpoint OpenAI-compatible lewat
+    `LiteLlm`. Tanpa itu, nama model diteruskan apa adanya ke Gemini API.
+    """
+    if not LITELLM_BASE:
+        return MODEL
+    from google.adk.models.lite_llm import LiteLlm
+
+    return LiteLlm(
+        model=f"openai/{MODEL}",
+        api_base=LITELLM_BASE,
+        api_key=os.environ.get("LITELLM_API_KEY", "dummy"),
+    )
 SCHEMAS = ("flat", "nested", "oneof")
 CORE = {
     "list_regions",
@@ -136,6 +178,14 @@ class Run:
     wall_ms: float = 0.0
     answer: str = ""
     error: str = ""
+    #: Dari kabel lewat token_proxy (sumber yang dipercaya). 0 = tidak terukur.
+    wire_in: int = 0
+    wire_out: int = 0
+    wire_calls: int = 0
+    #: Token tidak sebanding lintas model/endpoint - tokenizer dan system
+    #: prompt bawaan proxy berbeda. Dicatat agar hasil tidak tercampur.
+    model: str = ""
+    endpoint: str = ""
 
     @property
     def picked_right(self) -> bool:
@@ -144,10 +194,32 @@ class Run:
         return self.distractors == 0 and bool(self.tools_used)
 
 
+def _reset_wire() -> None:
+    if WIRE_USAGE.exists():
+        WIRE_USAGE.write_text("", encoding="utf-8")
+
+
+def _read_wire() -> tuple[int, int, int]:
+    """(prompt, completion, jumlah request) dari lalu lintas HTTP sebenarnya."""
+    if not WIRE_USAGE.exists():
+        return 0, 0, 0
+    rows = [
+        json.loads(x)
+        for x in WIRE_USAGE.read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ]
+    return (
+        sum(r.get("prompt_tokens") or 0 for r in rows),
+        sum(r.get("completion_tokens") or 0 for r in rows),
+        len(rows),
+    )
+
+
 async def run_one(
     task: Task, mode: str, n_tools: int, schema: str, timeout: float = 150.0
 ) -> Run:
     used: list[str] = []
+    _reset_wire()
 
     def before(*, tool, args, tool_context):
         if tool.name != "execute_code":
@@ -163,7 +235,7 @@ async def run_one(
         await cm.prepare()
         agent = LlmAgent(
             name="eval_code",
-            model=MODEL,
+            model=make_model(),
             instruction=cm.instruction_provider(
                 "Kamu analis data pesanan. Jawab ringkas dan sebutkan angkanya."
             ),
@@ -173,7 +245,7 @@ async def run_one(
     else:
         agent = LlmAgent(
             name="eval_direct",
-            model=MODEL,
+            model=make_model(),
             instruction=(
                 "Kamu analis data pesanan. Pakai tool yang tersedia. "
                 "Jawab ringkas dan sebutkan angkanya."
@@ -216,12 +288,16 @@ async def run_one(
         else:
             await ts.close()
 
+    wire_in, wire_out, wire_calls = _read_wire()
+
     return Run(
         task=task.id,
         kind=task.kind,
         mode=mode,
         n_tools=n_tools,
         schema=schema,
+        model=MODEL,
+        endpoint=LITELLM_BASE or "gemini-api",
         ok=bool(answer) and task.check(answer),
         in_tokens=tin,
         out_tokens=tout,
@@ -232,43 +308,94 @@ async def run_one(
         wall_ms=(time.perf_counter() - t0) * 1000,
         answer=answer.strip()[:300],
         error=error,
+        wire_in=wire_in,
+        wire_out=wire_out,
+        wire_calls=wire_calls,
     )
 
 
+def load_runs(path: Path) -> list[Run]:
+    """Baca hasil yang sudah ada dari JSONL."""
+    if not path.exists():
+        return []
+    out: list[Run] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            out.append(Run(**json.loads(line)))
+    return out
+
+
 async def part_b(
-    grid: list[int], schema: str, task_ids: list[str] | None, repeats: int
+    grid: list[int],
+    schema: str,
+    task_ids: list[str] | None,
+    repeats: int,
+    jsonl: Path,
+    resume: bool,
 ) -> list[Run]:
+    """Tiap run ditulis ke JSONL SEGERA setelah selesai.
+
+    Pelajaran mahal: versi pertama hanya menulis di akhir, jadi ketika proses
+    mati di tengah, ~5 menit panggilan LLM hilang seluruhnya. Dengan JSONL
+    per-run plus `--resume`, run bisa dipotong sesuai batas waktu dan
+    dilanjutkan.
+    """
     tasks = [t for t in TASKS if not task_ids or t.id in task_ids]
+
+    done: set[tuple[str, str, int, str]] = set()
     rows: list[Run] = []
-    total = len(tasks) * 2 * len(grid) * repeats
-    i = 0
-    for n in grid:
-        for t in tasks:
-            for mode in ("direct", "code"):
-                for _ in range(repeats):
-                    i += 1
-                    r = await run_one(t, mode, n, schema)
-                    rows.append(r)
-                    flag = "OK " if r.ok else "SALAH"
-                    print(
-                        f"[{i:>3}/{total}] {n:>2}t {t.id:>3} {mode:<6} {flag} "
-                        f"in={r.in_tokens:>6} out={r.out_tokens:>4} "
-                        f"turn={r.turns} call={r.tool_calls} "
-                        f"dist={r.distractors} {r.wall_ms / 1000:>5.1f}s"
-                        + (f" !{r.error[:60]}" if r.error else "")
-                    )
+    if resume:
+        rows = [r for r in load_runs(jsonl) if r.model in ("", MODEL)]
+        for r in rows:
+            done.add((r.task, r.mode, r.n_tools, r.schema))
+        if rows:
+            print(f"melanjutkan: {len(rows)} run sudah ada\n")
+
+    plan = [
+        (n, t, mode)
+        for n in grid
+        for t in tasks
+        for mode in ("direct", "code")
+        for _ in range(repeats)
+    ]
+    total = len(plan)
+
+    jsonl.parent.mkdir(parents=True, exist_ok=True)
+    for i, (n, t, mode) in enumerate(plan, 1):
+        if (t.id, mode, n, schema) in done:
+            print(f"[{i:>3}/{total}] {n:>2}t {t.id:>3} {mode:<6} (lewat)")
+            continue
+        r = await run_one(t, mode, n, schema)
+        rows.append(r)
+        with jsonl.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+        flag = "OK " if r.ok else "SALAH"
+        print(
+            f"[{i:>3}/{total}] {n:>2}t {t.id:>3} {mode:<6} {flag} "
+            f"in={r.wire_in or r.in_tokens:>6} "
+            f"out={r.wire_out or r.out_tokens:>4} "
+            f"turn={r.turns} call={r.tool_calls} "
+            f"dist={r.distractors} {r.wall_ms / 1000:>5.1f}s"
+            + (f" !{r.error[:60]}" if r.error else "")
+        )
     return rows
 
 
 def summarise(rows: list[Run]) -> None:
+    def tin(r: Run) -> int:
+        return r.wire_in or r.in_tokens
+
+    def tout(r: Run) -> int:
+        return r.wire_out or r.out_tokens
+
     def agg(sel: list[Run]) -> dict[str, Any]:
         if not sel:
             return {}
         return {
             "n": len(sel),
             "benar": f"{sum(r.ok for r in sel)}/{len(sel)}",
-            "in_median": int(statistics.median(r.in_tokens for r in sel)),
-            "out_median": int(statistics.median(r.out_tokens for r in sel)),
+            "in_median": int(statistics.median(tin(r) for r in sel)),
+            "out_median": int(statistics.median(tout(r) for r in sel)),
             "turn_median": statistics.median(r.turns for r in sel),
             "call_median": statistics.median(r.tool_calls for r in sel),
             "pengecoh": sum(r.distractors for r in sel),
@@ -300,6 +427,12 @@ def summarise(rows: list[Run]) -> None:
                     f"{a['in_median']:>8} {a['turn_median']:>5}"
                 )
 
+    wired = sum(1 for r in rows if r.wire_in)
+    print(
+        f"\nsumber token: {wired}/{len(rows)} run dari kabel; sisanya dari "
+        "usage_metadata ADK, yang TIDAK dipercaya lewat LiteLlm"
+    )
+
     print("\n=== gerbang promosi")
     for n in sorted({r.n_tools for r in rows}):
         d = [r for r in rows if r.n_tools == n and r.mode == "direct"]
@@ -308,8 +441,8 @@ def summarise(rows: list[Run]) -> None:
             continue
         acc_d = sum(r.ok for r in d) / len(d)
         acc_c = sum(r.ok for r in c) / len(c)
-        tok_d = statistics.median(r.in_tokens for r in d)
-        tok_c = statistics.median(r.in_tokens for r in c)
+        tok_d = statistics.median(r.wire_in or r.in_tokens for r in d)
+        tok_c = statistics.median(r.wire_in or r.in_tokens for r in c)
         verdict = (
             "LOLOS"
             if acc_c >= acc_d and tok_c < tok_d
@@ -326,12 +459,14 @@ def summarise(rows: list[Run]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("part", choices=["context", "run"])
+    ap.add_argument("part", choices=["context", "run", "report"])
     ap.add_argument("--tools", default="10,30,60")
     ap.add_argument("--schema", default="flat", choices=SCHEMAS)
     ap.add_argument("--tasks", default="")
     ap.add_argument("--repeats", type=int, default=1)
     ap.add_argument("--out", default="")
+    ap.add_argument("--jsonl", default="")
+    ap.add_argument("--no-resume", action="store_true")
     ns = ap.parse_args()
 
     grid = [int(x) for x in ns.tools.split(",")]
@@ -340,16 +475,42 @@ def main() -> int:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+    # Satu berkas per model: mencampur model dalam satu berkas membuat
+    # median token tidak berarti.
+    slug = MODEL.replace("/", "_").replace(":", "-")
+    jsonl = Path(ns.jsonl or f"build/eval_{slug}.jsonl")
+
     if ns.part == "context":
         rows = asyncio.run(part_a(grid))
         payload = [asdict(r) | {"ratio": round(r.ratio, 4)} for r in rows]
-    else:
-        if not os.environ.get("GOOGLE_API_KEY"):
-            print("GOOGLE_API_KEY belum diset", file=sys.stderr)
-            return 2
-        print(f"model: {MODEL} | schema: {ns.schema} | grid: {grid}\n")
-        runs = asyncio.run(part_b(grid, ns.schema, ids, ns.repeats))
+    elif ns.part == "report":
+        runs = load_runs(jsonl)
+        if not runs:
+            print(f"tidak ada hasil di {jsonl}", file=sys.stderr)
+            return 1
+        models = {r.model for r in runs}
+        print(f"{len(runs)} run dari {jsonl}")
+        print(f"model: {', '.join(sorted(models)) or '(tidak tercatat)'}")
+        if len(models) > 1:
+            print(
+                "PERINGATAN: beberapa model dalam satu berkas - "
+                "median token tidak sebanding"
+            )
         summarise(runs)
+        payload = [asdict(r) for r in runs]
+    else:
+        if not LITELLM_BASE and not os.environ.get("GOOGLE_API_KEY"):
+            print(
+                "set LITELLM_BASE_URL (di .env) atau GOOGLE_API_KEY",
+                file=sys.stderr,
+            )
+            return 2
+        where = LITELLM_BASE or "Gemini API langsung"
+        print(f"model: {MODEL} via {where} | schema: {ns.schema} | grid: {grid}\n")
+        runs = asyncio.run(
+            part_b(grid, ns.schema, ids, ns.repeats, jsonl, not ns.no_resume)
+        )
+        summarise(load_runs(jsonl))
         payload = [asdict(r) for r in runs]
 
     if ns.out:

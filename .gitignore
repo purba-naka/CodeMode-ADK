@@ -5,3 +5,4 @@ accessible_files/
 .adk/
 build/
 accessible_files/
+.env

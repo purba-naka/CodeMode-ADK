@@ -117,8 +117,6 @@ Server filesystem: 14.211 -> **10.271 char**.
 
 ## Bagian B — Correctness & pemilihan tool (dengan LLM)
 
-Lihat `build/eval_toolcount.json`. Diisi setelah run selesai.
-
 ### Komposisi task
 
 8 task, semua jawabannya diturunkan dari data di `eval/mock_server.py` jadi
@@ -161,3 +159,89 @@ deklarasi mendominasi saat tool sedikit. Inilah gunanya kategori `single`:
 kalau code mode menang di sana, pengukurannya patut dicurigai.
 
 Catatan: angka ini dari sebelum dedup envelope. Angka final ada di Bagian B.
+
+---
+
+## Bagian B — TERTUNDA: pengukuran token lewat endpoint ini belum sahih
+
+Status per 2026-11-21: harness jalan, tapi **angka tokennya belum bisa
+dipercaya**. Dicatat apa adanya, termasuk kesalahan yang saya buat sendiri.
+
+### Yang sudah pasti benar
+
+- Harness mendukung `LiteLlm` ke endpoint OpenAI-compatible
+  (`LITELLM_BASE_URL` di `.env`, yang di-gitignore).
+- Hasil ditulis ke JSONL **per-run** dengan `--resume`. Versi pertama hanya
+  menulis di akhir, jadi ketika proses mati di tengah, ~5 menit panggilan LLM
+  hilang seluruhnya.
+- Satu berkas JSONL per model, dan `model`/`endpoint` dicatat di tiap record.
+  Token tidak sebanding lintas model: `gemini-3.5-flash` langsung melaporkan
+  1.574 token untuk task s1, sementara lewat proxy `ag/gemini-3.8-flash`
+  melaporkan 7.533 untuk task yang sama - endpoint menyuntikkan system prompt
+  ~3,2k token.
+
+### Correctness: 100% di kedua mode
+
+Dari 48 run `cc/claude-sonnet-5-5` pada grid 10/30/60 tool: **semua benar**,
+dua mode, dan **nol pengecoh terpanggil**. Itu hasil yang sahih - tidak
+bergantung pada hitungan token.
+
+Jumlah turn juga sahih dan konsisten: code mode hampir selalu **2 turn**
+(satu tulis kode + satu jawab), sementara direct mode naik bersama jumlah
+call (c2: 3 turn/9 call, k1: 4 turn/3 call).
+
+### Yang TIDAK sahih: angka token
+
+Tiga hal ditemukan, berurutan:
+
+**1. Saya salah menuduh `usage_metadata` ADK.** Awalnya saya simpulkan ADK
+salah lapor karena token input identik untuk 10/30/60 tool. Setelah diukur
+dari kabel lewat `eval/token_proxy.py`, ternyata **angka ADK persis sama
+dengan kabel** (2.105 + 2.002 = 4.107, tepat seperti laporan ADK). Pembukuan
+ADK benar.
+
+**2. Endpoint kemungkinan memakai prompt caching.** Request code mode membawa
+`system` 26.492 char, tapi dilaporkan hanya `prompt_tokens=2105`. Untuk teks
+nyata endpoint ini konsisten di ~2,1 char/token, jadi 26.492 char seharusnya
+~12.600 token. Selisih 6x itu paling masuk akal dijelaskan oleh prompt
+caching, di mana `prompt_tokens` mengecualikan bagian yang ter-cache.
+
+Kalau benar, `prompt_tokens` mengukur **biaya tagihan**, bukan **ukuran
+konteks** - dan nilainya bergantung pada urutan eksekusi (run pertama bayar
+penuh, sisanya tidak). Perbandingan direct vs code mode jadi tidak sahih
+kecuali keadaan cache dikendalikan.
+
+**Hipotesis ini BELUM terverifikasi.** Rencananya menyimpan objek `usage`
+utuh (mencari field `cache_read_input_tokens`), tapi belum terlaksana.
+
+**3. ADK hanya mendeklarasikan 1 tool ke model.** Catatan kabel menunjukkan
+`n_tools_declared: 1` (`execute_code`) untuk code mode - itu memang benar.
+Tapi perlu diverifikasi berapa yang dideklarasikan di **direct** mode;
+diagnostik saya menimpa berkasnya sebelum terbaca (`_reset_wire()` memotong
+per-run, jadi yang tersisa hanya run terakhir). Kalau direct mode juga hanya
+mengirim sedikit tool, **seluruh sumbu jumlah-tool tidak mengukur apa pun**.
+
+### Kesalahan saya yang merusak
+
+Saat membersihkan proxy, pola `taskkill` saya `":2012[89].*LISTENING"` ikut
+mencocokkan port **20128** - yaitu layanan LiteLLM milik pengguna, bukan hanya
+proxy saya di 20129. **Layanan itu saya matikan.** Pola yang benar mencocokkan
+port secara tepat:
+
+```bash
+netstat -ano | awk '$2 ~ /:20129$/ && $4=="LISTENING" {print $5}'
+```
+
+Pengukuran Bagian B berhenti di sini sampai layanan itu hidup lagi.
+
+### Langkah berikutnya, berurutan
+
+1. Hidupkan kembali layanan di port 20128.
+2. Simpan objek `usage` utuh di proxy; cari field cache. Kalau ada,
+   gunakan `request_tokens` (dihitung sendiri dengan tiktoken di proxy)
+   sebagai metrik utama - deterministik dan tidak terpengaruh cache.
+3. Verifikasi berapa tool yang benar-benar dideklarasikan di direct mode.
+   Kalau hanya 1, sumbu jumlah-tool harus dirancang ulang.
+4. Baru jalankan grid penuh dan isi tabel hasil.
+
+Sampai ketiganya selesai, **jangan kutip angka token dari dokumen ini.**
