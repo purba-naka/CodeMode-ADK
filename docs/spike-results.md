@@ -10,6 +10,7 @@ Skrip: `spikes/s123_adk.py` (S1-S3), `spikes/s4_host.py` + `spikes/s4_sandbox.ts
 |---|---|---|---|
 | S1 | `instruction` boleh provider async? | ✅ YA | Tidak perlu `before_model_callback`. Ada catatan state injection |
 | S2 | `before_tool`/`after_tool` jalan saat `run_async()` langsung? | ❌ **TIDAK** | `RpcBridge` harus mereplikasi 5 langkah |
+| S2b | Apakah replikasi itu MUNGKIN? | ✅ **YA, terbukti 5/5** | Prasyarat terpenuhi. HITL & redaksi tetap hidup |
 | S3 | Seberapa bergantung pada API privat? | ✅ Nyaris tidak | Risiko diturunkan; `outputSchema` ternyata ada |
 | S4 | Deno: jaringan mati, RPC dua arah, latensi | ✅ Semua lolos | **Fresh per call dikonfirmasi**, bukan lagi kondisional |
 | S5 | Pemisahan channel log vs RPC | ✅ Aman | Teknik override `console.log` terbukti |
@@ -212,6 +213,82 @@ keluaran sudah dibungkus di sisi sandbox.
 
 ---
 
+---
+
+## S2b — Perbaikan S2: replikasi callback TERBUKTI JALAN
+
+S2 hanya membuktikan masalahnya. S2b membuktikan solusinya, lewat
+`spikes/s2b_callback_chain.py`.
+
+### Prasyarat: terpenuhi
+
+Rantai aksesnya pendek dan dua dari tiga mata rantainya publik:
+
+```
+tool_context._invocation_context      # privat, tapi dipakai ADK sendiri di mana-mana
+    .agent                            # field PUBLIK (invocation_context.py:164)
+    .plugin_manager                   # field PUBLIK (invocation_context.py:212)
+```
+
+Terbukti: `tool_context._invocation_context is ictx` -> `True`.
+
+Catatan versi: di ADK 1.33.0, `ToolContext` adalah **alias** untuk
+`google.adk.agents.context.Context` (`tool_context.py:29`). `Context` mewarisi
+`_invocation_context` dari `ReadonlyContext`.
+
+### Lima skenario, semua lolos
+
+| # | Skenario | Urutan yang terbukti | Artinya |
+|---|---|---|---|
+| 1 | Rantai lengkap | `before > TOOL > after` | Audit per-tool hidup |
+| 2 | `before` mengembalikan nilai | `before MENOLAK > tool dibatalkan > after` | **Dasar HITL / deny-rule** |
+| 3 | `after` mengubah hasil | `before > TOOL > after MEREDAKSI` | **Dasar redaksi PII** |
+| 4 | Tool gagal, tak ada handler | `before > TOOL raise > RAISE ke pemanggil` | Sandbox melihat exception |
+| 5 | `on_tool_error` menangani | `... > on_tool_error MENANGANI > after` | Jadi nilai, bukan exception |
+
+Skenario 4 adalah yang paling penting untuk korektness: ADK mengembalikan
+kegagalan tool sebagai **nilai**, tapi kode sandbox membaca **return value** —
+jadi bridge wajib me-`raise`, bukan me-return. Terbukti bekerja.
+
+### Dua detail yang hampir salah
+
+**Urutan `on_tool_error` terbalik.** Implementasi pertama saya menjalankan
+canonical lalu plugin. ADK melakukan sebaliknya (`functions.py:454-477`):
+plugin **dulu**, baru canonical, dan `return` begitu salah satu memberi hasil.
+Kalau dibalik, plugin observability bisa terlewat.
+
+**`args` harus di-deepcopy.** ADK melakukannya di `functions.py:482` karena
+callback boleh memutasi args. Argumen yang datang dari sandbox juga harus
+diisolasi sebelum masuk rantai callback.
+
+### Urutan final untuk `RpcBridge`
+
+```
+args = deepcopy(args)
+1. plugin_manager.run_before_tool_callback(...)
+2. agent.canonical_before_tool_callbacks        -> break kalau ada hasil
+3. tool.run_async(...)
+     on error: plugin_manager.run_on_tool_error_callback(...)   <- plugin DULU
+               lalu agent.canonical_on_tool_error_callbacks
+               kalau dua-duanya None -> RAISE (jangan return)
+4. plugin_manager.run_after_tool_callback(..., result=)
+5. agent.canonical_after_tool_callbacks
+```
+
+### Yang masih harus diuji di Fase 3
+
+S2b memakai `InvocationContext` yang dibangun manual, bukan dari `Runner`
+sungguhan. Yang belum terbukti:
+
+- apakah `ToolContext` yang diterima `ExecuteCodeTool` dari flow sungguhan
+  membawa `_invocation_context` yang sama lengkap
+- apakah memakai ulang `tool_context` yang sama untuk tool di dalam sandbox
+  menimbulkan masalah atribusi (`function_call_id` milik `execute_code`, bukan
+  milik tool yang dipanggil di dalamnya)
+
+Yang kedua kemungkinan besar perlu `ToolContext` turunan per tool call, dengan
+`function_call_id` sendiri. Diputuskan saat Fase 3.
+
 ## Yang berubah di `implementasi.md`
 
 | # | Perubahan |
@@ -222,6 +299,7 @@ keluaran sudah dibungkus di sisi sandbox.
 | 4 | Fase 3: tambahkan urutan replikasi 5 langkah + kebutuhan `invocation_context` & `agent` |
 | 5 | Risiko: S3 diturunkan; risiko transpile/sourcemap dihapus |
 | 6 | S1: catatan `bypass_state_injection` |
+| 7 | S2b: urutan final `RpcBridge` + 2 jebakan (urutan on_tool_error, deepcopy args) |
 
 ## Sisa yang belum terjawab (masuk Fase 3)
 

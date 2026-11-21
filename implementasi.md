@@ -184,7 +184,8 @@ atas, jadi tidak masuk akal menulis Fase 1 sebelum terjawab.
 | # | Yang diuji | Hasil | Konsekuensi |
 |---|---|---|---|
 | S1 | `instruction` ADK bisa provider **async**? | ✅ **YA** | Rencana cadangan `before_model_callback` tidak perlu. Tapi `bypass_state_injection=True` → `{var}` tidak di-inject otomatis |
-| S2 | `before_tool`/`after_tool` jalan kalau `run_async()` dipanggil langsung? | ❌ **TIDAK** (hipotesis benar) | `RpcBridge` wajib mereplikasi 5 langkah `functions.py:510-569`. Lihat Fase 3 |
+| S2 | `before_tool`/`after_tool` jalan kalau `run_async()` dipanggil langsung? | ❌ **TIDAK** (hipotesis benar) | `RpcBridge` wajib mereplikasi 5 langkah `functions.py:510-569` |
+| S2b | Apakah replikasi itu **mungkin**? | ✅ **YA — 5/5 skenario** | `_invocation_context` terjangkau; `.agent` & `.plugin_manager` field publik. HITL, deny-rule, dan redaksi PII tetap hidup |
 | S3 | Seberapa bergantung pada `McpTool._mcp_tool` (privat)? | ✅ **Nyaris tidak** | `_get_declaration().parameters_json_schema` **identik** dengan `_mcp_tool.inputSchema`. Sisa ketergantungan hanya `outputSchema`. `outputSchema` ada di **14/14** tool |
 | S4 | Deno: jaringan mati? stdio dua arah? latensi? | ✅ **Semua lolos** | `fetch`/`connect`/`readTextFile` → `NotCapable`. Median **85 ms** end-to-end → **fresh per call, final**. Bonus: `data:` URL import → tanpa transpiler |
 | S5 | Pemisahan channel log vs RPC | ✅ **Aman** | Log yang menyerupai pesan protokol tidak menipu parser. Override `console.log` terbukti |
@@ -260,9 +261,20 @@ me-log ringkasannya berhasil; dan upaya akses jaringan di dalam sandbox gagal.
   Kalau langkah 1-2 mengembalikan nilai, tool **tidak** dijalankan — inilah yang
   nanti membuat `require_confirmation` / HITL tetap hidup.
 
-  **Prasyarat yang belum terjawab:** apakah `invocation_context` dan `agent`
-  terjangkau dari `ToolContext` yang diterima `ExecuteCodeTool`? Kalau tidak,
-  replikasi ini mustahil dan harus dinyatakan terbuka di README.
+  **Prasyarat: TERPENUHI (S2b).** `tool_context._invocation_context` terjangkau,
+  dan `.agent` + `.plugin_manager` adalah field **publik**. Lima skenario
+  terbukti: rantai lengkap · `before` membatalkan tool (dasar HITL) · `after`
+  meredaksi hasil · kegagalan ter-raise · `on_tool_error` menangani.
+
+  **Dua jebakan yang sudah ketemu:**
+  - `on_tool_error`: ADK menjalankan **plugin dulu, lalu canonical**
+    (`functions.py:454-477`). Jangan dibalik.
+  - `args` wajib di-`deepcopy` sebelum masuk rantai (`functions.py:482`) —
+    callback boleh memutasinya.
+
+  **Sisa untuk Fase 3:** `function_call_id` pada `tool_context` adalah milik
+  `execute_code`, bukan milik tool yang dipanggil di dalam sandbox. Kemungkinan
+  perlu `ToolContext` turunan per tool call agar atribusinya benar.
 - `after_agent_callback` → `release(invocation_id)`, plus reaper idle sebagai
   jaring pengaman kalau callback tidak terpanggil (crash, cancel).
 - Tool yang **harus ditolak** dengan error terstruktur saat membangun katalog
@@ -356,7 +368,7 @@ disclosure kalau katalog >50 tool → prompt caching blok instruction.
 | Risiko | Mitigasi |
 |---|---|
 | ~~`_mcp_tool` privat pecah saat upgrade ADK~~ **diturunkan** | S3: `_get_declaration().parameters_json_schema` **identik** dengan `_mcp_tool.inputSchema` (butuh `JSON_SCHEMA_FOR_FUNC_DECL=True`). Input aman tanpa API privat. Sisa ketergantungan hanya `outputSchema` → degradasi mulus ke index signature |
-| Callback/HITL tidak ikut jalan | **S2: terbukti tidak jalan.** Mitigasi = replikasi 5 langkah di Fase 3. Kalau `invocation_context` tidak terjangkau, nyatakan eksplisit di README — jangan diklaim |
+| ~~Callback/HITL tidak ikut jalan~~ **teratasi** | S2 membuktikan masalahnya, **S2b membuktikan solusinya** (5/5). Replikasi 5 langkah layak; prasyarat akses terpenuhi. Sisa: atribusi `function_call_id` per tool call (Fase 3) |
 | ~~Spawn sandbox lambat di Windows~~ **selesai** | S4: median 85 ms end-to-end. Fresh per call. Catatan: pakai `deno.exe` langsung, bukan shim `.cmd` npm |
 | ~~Transpile TS → JS + sourcemap~~ **hilang** | S4: `data:` URL import ditranspile Deno sendiri, dengan semua permission ditolak |
 | Codegen gagal pada schema rumit | Subset dulu, tipe longgar + doc comment untuk sisanya |
