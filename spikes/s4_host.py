@@ -11,8 +11,10 @@ import time
 from pathlib import Path
 
 SANDBOX = Path(__file__).parent / "s4_sandbox.ts"
-DENO = shutil.which("deno.exe") or shutil.which("deno") or str(
-    Path(os.environ["APPDATA"]) / "npm/node_modules/deno/deno.exe"
+DENO = (
+    shutil.which("deno.exe")
+    or shutil.which("deno")
+    or str(Path(os.environ["APPDATA"]) / "npm/node_modules/deno/deno.exe")
 )
 
 DENY = [
@@ -36,7 +38,10 @@ FAKE = {
 async def run(code: str, timeout: float = 20.0) -> dict:
     t0 = time.perf_counter()
     proc = await asyncio.create_subprocess_exec(
-        DENO, "run", *DENY, str(SANDBOX),
+        DENO,
+        "run",
+        *DENY,
+        str(SANDBOX),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -71,14 +76,19 @@ async def run(code: str, timeout: float = 20.0) -> dict:
                 fn = FAKE.get(key)
                 if fn is None:
                     resp = {
-                        "t": "result", "id": m["id"], "ok": False,
-                        "error": {"type": "ToolError",
-                                  "message": f"tool {key} gagal"},
+                        "t": "result",
+                        "id": m["id"],
+                        "ok": False,
+                        "error": {"type": "ToolError", "message": f"tool {key} gagal"},
                     }
                 else:
                     await asyncio.sleep(0.05)  # simulasi latensi MCP
-                    resp = {"t": "result", "id": m["id"], "ok": True,
-                            "value": fn(m["args"])}
+                    resp = {
+                        "t": "result",
+                        "id": m["id"],
+                        "ok": True,
+                        "value": fn(m["args"]),
+                    }
                 proc.stdin.write((json.dumps(resp) + "\n").encode())
                 await proc.stdin.drain()
             elif m["t"] == "done":
@@ -100,7 +110,10 @@ async def run(code: str, timeout: float = 20.0) -> dict:
         await proc.wait()
 
     return {
-        "status": status, "logs": logs, "calls": calls, "error": err,
+        "status": status,
+        "logs": logs,
+        "calls": calls,
+        "error": err,
         "spawn_ms": spawned * 1000,
         "total_ms": (time.perf_counter() - t0) * 1000,
         "stderr": stderr.strip()[:400],
@@ -180,8 +193,10 @@ async def main() -> None:
         r = await run(code)
         worst = max(worst, r["spawn_ms"])
         print(f"--- {name}")
-        print(f"    status={r['status']} calls={r['calls']} "
-              f"spawn={r['spawn_ms']:.0f}ms total={r['total_ms']:.0f}ms")
+        print(
+            f"    status={r['status']} calls={r['calls']} "
+            f"spawn={r['spawn_ms']:.0f}ms total={r['total_ms']:.0f}ms"
+        )
         for line in r["logs"]:
             print(f"    log> {line}")
         if r["error"]:
@@ -197,10 +212,14 @@ async def main() -> None:
         r = await run('console.log("ping");')
         times.append(r["total_ms"])
     times.sort()
-    print(f"    total end-to-end: min={times[0]:.0f}ms "
-          f"median={times[2]:.0f}ms max={times[-1]:.0f}ms")
-    print(f"    ambang plan: 150ms -> "
-          f"{'FRESH PER CALL ok' if times[2] < 150 else 'perlu reuse per-turn'}")
+    print(
+        f"    total end-to-end: min={times[0]:.0f}ms "
+        f"median={times[2]:.0f}ms max={times[-1]:.0f}ms"
+    )
+    print(
+        f"    ambang plan: 150ms -> "
+        f"{'FRESH PER CALL ok' if times[2] < 150 else 'perlu reuse per-turn'}"
+    )
 
 
 if __name__ == "__main__":

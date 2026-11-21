@@ -227,7 +227,32 @@ Keputusan di fase ini:
 - **Doc comment** diturunkan dari `description` tool. Jangan dipotong — ini yang
   menggantikan tool description.
 
-Gerbang keluar: deklarasi tervalidasi type-checker tanpa error untuk server uji.
+Gerbang keluar: `scripts/f1_gate.py` — tiga pemeriksaan, bukan satu:
+
+1. `deno check` atas deklarasi → harus **lolos**
+2. `deno check` atas probe **positif** (pemakaian benar) → harus **lolos**
+3. `deno check` atas probe **negatif** (tipe salah, field wajib hilang, tool
+   tidak ada) → harus **GAGAL**
+
+Langkah 3 yang membuat gerbang ini berarti. Tanpa itu, deklarasi yang isinya
+`any` semua juga akan "lolos".
+
+> **Status: LOLOS 2026-11-21.** 14 tool, 234 baris, 8.379 char (~2.1k token).
+> Input schema 14/14 dari jalur publik `declaration`; `outputSchema` 14/14.
+> Probe negatif gagal dengan 3 error yang tepat: `TS2322` (tipe salah),
+> `TS2345` (field wajib hilang), `TS2339` (tool tidak ada). 37 unit test lolos.
+
+#### Temuan Fase 1: deskripsi tool bisa melarikan diri dari blok komentar
+
+Deskripsi `search_files` dari server filesystem **resmi** mengandung
+`'**/*.ext'`. Substring `*/` di dalamnya **menutup blok JSDoc lebih awal** dan
+merusak seluruh deklarasi — gerbang gagal di percobaan pertama.
+
+Ini bukan cacat kosmetik. Deskripsi datang dari server MCP, jadi server yang
+bermusuhan bisa memakai celah yang sama untuk menyuntikkan deklarasi TS buatan
+sendiri ke dalam konteks model. `codegen.typescript.escape_doc()` menetralkan
+`*/`, dengan test regresi yang membuktikan payload tetap inert setelah semua
+blok komentar dibuang.
 
 ### Fase 2 — Sandbox + RPC
 
