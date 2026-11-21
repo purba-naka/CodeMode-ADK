@@ -26,7 +26,6 @@ META_KEYS = frozenset({"$schema", "$id", "$comment", "title", "definitions", "$d
 
 # Tool yang tidak boleh dipanggil dari dalam sandbox: butuh interaksi,
 # kredensial, atau kontrol alur yang sandbox tidak punya.
-_BLOCKED_ATTRS = ("require_confirmation",)
 
 
 class SchemaSource(StrEnum):
@@ -127,21 +126,89 @@ def _extract_input(tool: BaseTool) -> tuple[dict[str, Any], SchemaSource]:
     return {}, SchemaSource.NONE
 
 
+#: Bentuk NYATA yang dikembalikan `McpTool.run_async` - envelope
+#: `CallToolResult` utuh, bukan payload.
+#:
+#: Ini terukur, bukan dugaan: `outputSchema` MCP menjelaskan isi
+#: `structuredContent`, tapi ADK meneruskan seluruh envelope. Kalau codegen
+#: memakai `outputSchema` apa adanya, tipe yang dideklarasikan BERBEDA dari
+#: nilai runtime - model akan menulis `r.content` mengharapkan string lalu
+#: menerima array. Tipe yang menyesatkan lebih buruk daripada tanpa tipe.
+def mcp_envelope(output_schema: dict[str, Any] | None) -> dict[str, Any]:
+    structured: dict[str, Any] = output_schema or {
+        "type": "object",
+        "additionalProperties": True,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "content": {
+                "description": (
+                    "Blok konten MCP. Teksnya biasanya sama dengan "
+                    "structuredContent, hanya sudah dirender."
+                ),
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["type"],
+                    "additionalProperties": True,
+                },
+            },
+            "structuredContent": {
+                **structured,
+                "description": "Payload terstruktur sesuai outputSchema tool.",
+            },
+            "isError": {
+                "description": (
+                    "Selalu false di sini - kegagalan tool dilempar sebagai "
+                    "exception, jadi tidak perlu diperiksa."
+                ),
+                "type": "boolean",
+            },
+        },
+        "required": ["content"],
+    }
+
+
 def _extract_output(tool: BaseTool) -> tuple[dict[str, Any] | None, SchemaSource]:
     raw = getattr(tool, "_mcp_tool", None)
-    if raw is not None and getattr(raw, "outputSchema", None):
-        return dict(raw.outputSchema), SchemaSource.MCP_PRIVATE
-    return None, SchemaSource.NONE
+    if raw is None:
+        # Tool non-MCP (FunctionTool dll) mengembalikan nilainya langsung,
+        # tanpa envelope.
+        return None, SchemaSource.NONE
+    out = getattr(raw, "outputSchema", None)
+    return (
+        mcp_envelope(dict(out) if out else None),
+        SchemaSource.MCP_PRIVATE if out else SchemaSource.GEMINI_PARAMS,
+    )
 
 
 def _rejection_reason(tool: BaseTool) -> str | None:
-    for attr in _BLOCKED_ATTRS:
-        val = getattr(tool, attr, None)
-        if val:  # True atau callable
-            return (
-                f"{attr} aktif - butuh interaksi pengguna, tidak bisa dipanggil "
-                "dari sandbox"
-            )
+    # ADK menyimpannya sebagai `_require_confirmation` (privat). Nama publik
+    # `require_confirmation` hanya ada di parameter __init__, jadi memeriksa
+    # nama publik saja akan selalu melewatkan tool ini.
+    if getattr(tool, "_require_confirmation", None) or getattr(
+        tool, "require_confirmation", None
+    ):
+        return (
+            "require_confirmation aktif - butuh persetujuan pengguna, tidak "
+            "bisa diminta dari dalam sandbox"
+        )
+
+    # BaseAuthenticatedTool dengan auth_config: kalau kredensial belum ada,
+    # `run_async` memanggil request_credential lalu MENGEMBALIKAN string
+    # "Pending User Authorization." sebagai NILAI, bukan error. Di sandbox,
+    # string itu akan dibaca sebagai hasil sukses - gagal senyap.
+    if getattr(tool, "_credentials_manager", None) is not None:
+        return (
+            "butuh alur kredensial interaktif - run_async mengembalikan "
+            "'Pending User Authorization.' sebagai nilai, yang di sandbox "
+            "tampak seperti hasil sukses"
+        )
     return None
 
 
@@ -153,7 +220,7 @@ def spec_from_tool(tool: BaseTool, server: str) -> ToolSpec:
         name=tool.name,
         description=(tool.description or "").strip(),
         input_schema=strip_meta(in_schema),
-        output_schema=strip_meta(out_schema) if out_schema else None,
+        output_schema=out_schema,
         input_source=in_src,
         output_source=out_src,
     )

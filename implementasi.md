@@ -325,9 +325,74 @@ lewat stdout mentah dan membuktikan host tetap menutup di `max_calls`.
   - `args` wajib di-`deepcopy` sebelum masuk rantai (`functions.py:482`) —
     callback boleh memutasinya.
 
-  **Sisa untuk Fase 3:** `function_call_id` pada `tool_context` adalah milik
-  `execute_code`, bukan milik tool yang dipanggil di dalam sandbox. Kemungkinan
-  perlu `ToolContext` turunan per tool call agar atribusinya benar.
+  **Atribusi: SELESAI.** `derive_tool_context()` membuat ToolContext turunan
+  per tool call dengan `function_call_id` berbeda (`fc-exec#1`, `#2`, ...),
+  **tapi `event_actions` dibagi dengan parent**. Yang kedua itu wajib: kalau
+  turunan membuat `EventActions` baru, state delta dan artifact delta dari tool
+  di dalam sandbox **hilang diam-diam**, karena flow hanya mempersistensi
+  EventActions milik `execute_code`.
+
+> **Status Fase 3: LOLOS 2026-11-21.** `scripts/f3_gate.py` - tumpukan penuh
+> dengan MCP server filesystem sungguhan, 6 tool call berantai, filter di dalam
+> kode. Audit callback melihat keenamnya dengan `function_call_id` unik.
+> 83 test lolos.
+
+#### Temuan Fase 3a: tipe `Output` tidak cocok dengan nilai runtime
+
+`outputSchema` MCP menjelaskan isi `structuredContent`, tapi
+`McpTool.run_async` meneruskan **envelope `CallToolResult` utuh**:
+
+```json
+{"content":[{"type":"text","text":"..."}],
+ "structuredContent":{"content":"..."},
+ "isError":false}
+```
+
+Codegen Fase 1 memakai `outputSchema` apa adanya, jadi tipe yang dideklarasikan
+mengatakan `content: string` sementara nilai runtime-nya **array blok**. Model
+akan menulis `r.content` mengharapkan string. **Tipe yang menyesatkan lebih
+buruk daripada tanpa tipe.**
+
+Diperbaiki dengan `catalog.mcp_envelope()` - pengetahuan MCP ditaruh di
+`Catalog` (yang memang sudah tahu MCP), sehingga `Codegen` tetap generik.
+
+Biaya akurasi ini terukur: deklarasi tumbuh **8.379 -> 14.211 char**
+(~2,1k -> ~3,6k token) karena envelope dipancarkan per tool. Optimasi yang
+jelas untuk Fase 5: satu tipe generik bersama
+(`interface McpResult<T> { ... }`) alih-alih mengulang envelope 14 kali.
+Dicatat dengan angka, bukan dikerjakan sekarang, supaya Fase 4 tidak tertunda.
+
+#### Temuan Fase 3b: `isError` MCP tidak melempar exception
+
+Terukur pada server sungguhan - membaca berkas yang tidak ada:
+
+```json
+{"content":[{"type":"text","text":"ENOENT: no such file..."}], "isError":true}
+```
+
+`McpTool.run_async` **tidak** melempar exception. Di direct-mode itu tidak
+berbahaya: model membaca teksnya dan paham. Di code mode **fatal**, karena kode
+sandbox membaca return value dan lanjut seolah berhasil.
+
+Plan sudah mengantisipasi jebakan "error sebagai nilai" di lapisan ADK, tapi
+**melewatkan lapisan envelope MCP**. `RpcBridge` sekarang melempar
+`McpToolFailed`.
+
+Penempatannya disengaja: **setelah** seluruh rantai callback, bukan sebelum.
+Di direct-mode ADK memperlakukan hasil ber-`isError` sebagai hasil sukses, jadi
+callback memang harus tetap melihatnya - dan callback redaksi masih bisa
+membersihkan `isError` lalu membuat call itu dianggap berhasil. Ada test untuk
+kedua perilaku.
+
+#### Temuan Fase 3c: `require_confirmation` tersimpan di atribut privat
+
+ADK menyimpannya sebagai `_require_confirmation`; nama publik hanya ada di
+parameter `__init__`. Memeriksa nama publik saja akan **selalu** melewatkan tool
+yang butuh konfirmasi - ditangkap oleh test, bukan oleh pembacaan kode.
+
+Sekalian ditambahkan: tool dengan `_credentials_manager` juga ditolak, karena
+`run_async`-nya mengembalikan string `"Pending User Authorization."` sebagai
+**nilai** - jebakan gagal-senyap yang sama.
 - `after_agent_callback` → `release(invocation_id)`, plus reaper idle sebagai
   jaring pengaman kalau callback tidak terpanggil (crash, cancel).
 - Tool yang **harus ditolak** dengan error terstruktur saat membangun katalog

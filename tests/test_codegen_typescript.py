@@ -229,3 +229,50 @@ def test_strip_meta_tidak_rekursif():
         }
     )
     assert "title" in out["properties"]
+
+
+# ------------------------------------ envelope MCP (temuan Fase 3)
+def test_mcp_envelope_membungkus_output_schema():
+    """`outputSchema` MCP menjelaskan `structuredContent`, tapi ADK meneruskan
+    envelope `CallToolResult` utuh. Tipe harus cocok dengan nilai runtime."""
+    from codemode.catalog import mcp_envelope
+
+    env = mcp_envelope(
+        {
+            "type": "object",
+            "properties": {"content": {"type": "string"}},
+            "required": ["content"],
+        }
+    )
+    out = ts_type(env)
+    assert "content: " in out  # blok MCP
+    assert "structuredContent?:" in out
+    assert "isError?: boolean;" in out
+    # payload bertipe ada di dalam structuredContent, bukan di level atas
+    assert out.index("structuredContent") < out.index("isError")
+
+
+def test_mcp_envelope_tanpa_output_schema():
+    from codemode.catalog import mcp_envelope
+
+    out = ts_type(mcp_envelope(None))
+    assert "structuredContent?:" in out
+    assert "[key: string]: any" in out
+
+
+def test_tool_non_mcp_tidak_dibungkus_envelope():
+    """FunctionTool mengembalikan nilainya langsung - tanpa envelope."""
+    from google.adk.tools import FunctionTool
+
+    from codemode.catalog import spec_from_tool
+
+    def f(x: int) -> dict:
+        """D.
+
+        Args:
+            x: a.
+        """
+        return {}
+
+    s = spec_from_tool(FunctionTool(f), "srv")
+    assert s.output_schema is None
