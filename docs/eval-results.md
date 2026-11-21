@@ -160,133 +160,119 @@ Server filesystem: 14.211 -> **10.271 char**.
 
 ---
 
-## Bagian B — Correctness & pemilihan tool (dengan LLM)
+## Bagian B — Correctness & token (dengan LLM)
 
-### Komposisi task
+Sumber: `build/eval_gemini-3.5-flash.jsonl`, 32 run.
+**Grid belum lengkap** — baru 10 dan 30 tool; 60 tool belum terukur.
 
-8 task, semua jawabannya diturunkan dari data di `eval/mock_server.py` jadi
-bisa diverifikasi otomatis.
+> Pengumpulan data dihentikan atas permintaan pemilik proyek: jalur Gemini API
+> langsung dimatikan (`ALLOW_GEMINI_DIRECT = False` di `eval/harness.py`).
+> Kelanjutannya harus lewat endpoint OpenAI-compatible.
 
-| id | kategori | ekspektasi |
+### Correctness: sempurna di kedua mode
+
+| | direct | code |
 |---|---|---|
-| s1, s2 | single-call | **code mode harus KALAH** — kalau menang, pengukurannya salah |
-| c1, c2, c3 | multi-call berantai | medan utama klaim 3 |
-| d1, d2 | data-heavy | penghematan hasil antara terbesar |
-| k1 | control-flow | loop dengan kondisi berhenti (complete di polling ke-3) |
+| benar | 16/16 | 16/16 |
+| pengecoh terpanggil | 0 | 0 |
 
-### Metrik
+Juga dikonfirmasi oleh 48 run terpisah lewat `cc/claude-sonnet-5-5`:
+48/48 benar, 0 pengecoh.
 
-| metrik | sumber |
-|---|---|
-| token input/output | `usage_metadata` event ADK |
-| **akurasi pemilihan tool** | pengecoh yang terpanggil, lewat `before_tool_callback` |
-| jumlah turn model | hitung event ber-`usage_metadata` |
-| tool call sebenarnya | `before_tool_callback` (code mode: lewat `RpcBridge`) |
-| correctness | checker per task atas jawaban akhir |
+**Akurasi pemilihan tool tidak jadi masalah** pada katalog sampai 60 tool.
+Jadi klaim blog soal "handle many more tools" tidak terbukti lewat jalur
+akurasi — terbuktinya lewat biaya konteks (Bagian A).
 
-Satu hal yang rapi: **metrik tool call memakai jalur yang sama di kedua mode**
-(`before_tool_callback`), karena `RpcBridge` mereplikasi rantai callback ADK.
-Itu hasil kerja S2b.
+### Token: tergantung satu hal, dan bukan jumlah tool
 
----
+| jumlah tool | akurasi | token direct | token code | selisih | gerbang |
+|---:|---|---:|---:|---:|---|
+| 10 | 100% → 100% | 4.877 | 4.213 | **−14%** | LOLOS |
+| 30 | 100% → 100% | 10.648 | 16.088 | **+51%** | gagal |
 
-## Hasil awal (subset validasi, 10 tool, flat)
+Per kategori (median token input):
 
-| task | mode | benar | token in | out | turn | call |
-|---|---|---|---:|---:|---:|---:|
-| s1 | direct | OK | 1.591 | 38 | 2 | 1 |
-| s1 | code | OK | 8.718 | 220 | 3 | 5 |
-| c1 | direct | OK | 2.759 | 54 | 2 | 1 |
-| c1 | code | OK | 8.885 | 191 | 3 | 2 |
+| kategori | direct | code | turn direct | turn code |
+|---|---:|---:|---:|---:|
+| single | 5.232 | 7.473 | 2,5 | 2,0 |
+| chain | 6.924 | 11.593 | 3,0 | 3,5 |
+| data | 7.744 | **30.548** | 3,0 | **7,5** |
+| control | 9.263 | **6.268** | 4,0 | **2,0** |
 
-Pada 10 tool, code mode memakai **~4x token input** — sesuai dugaan, overhead
-deklarasi mendominasi saat tool sedikit. Inilah gunanya kategori `single`:
-kalau code mode menang di sana, pengukurannya patut dicurigai.
+Kategori `data` anjlok 4x. Itu bukan derau — ada penyebabnya.
 
-Catatan: angka ini dari sebelum dedup envelope. Angka final ada di Bagian B.
+### Temuan utama: penentunya adalah kode-jadi-sekali
 
----
+Rincian per task memperlihatkan korelasi yang hampir sempurna:
 
-## Bagian B — TERTUNDA: pengukuran token lewat endpoint ini belum sahih
+| kelompok | n | median rasio | median turn |
+|---|---:|---:|---:|
+| kode jadi sekali (turn=2) | 8 | **0,85x** | 2,0 |
+| perlu diperbaiki (turn>2) | 8 | **2,06x** | 4,5 |
 
-Status per 2026-11-21: harness jalan, tapi **angka tokennya belum bisa
-dipercaya**. Dicatat apa adanya, termasuk kesalahan yang saya buat sendiri.
+Tingkat jadi-sekali: **8/16 (50%)** pada `gemini-3.5-flash`.
 
-### Yang sudah pasti benar
+Contoh ekstrem, task `d2` ("sebutkan id pesanan dengan items >= 5"):
 
-- Harness mendukung `LiteLlm` ke endpoint OpenAI-compatible
-  (`LITELLM_BASE_URL` di `.env`, yang di-gitignore).
-- Hasil ditulis ke JSONL **per-run** dengan `--resume`. Versi pertama hanya
-  menulis di akhir, jadi ketika proses mati di tengah, ~5 menit panggilan LLM
-  hilang seluruhnya.
-- Satu berkas JSONL per model, dan `model`/`endpoint` dicatat di tiap record.
-  Token tidak sebanding lintas model: `gemini-3.5-flash` langsung melaporkan
-  1.574 token untuk task s1, sementara lewat proxy `ag/gemini-3.8-flash`
-  melaporkan 7.533 untuk task yang sama - endpoint menyuntikkan system prompt
-  ~3,2k token.
+| | turn | tool call | token input |
+|---|---:|---:|---:|
+| direct, 10 tool | 3 | 5 | 4.843 |
+| code, 10 tool | **12** | **19** | **38.089** (7,86x) |
+| code, 30 tool | 10 | 17 | 51.676 (4,89x) |
 
-### Correctness: 100% di kedua mode
+Jawabannya benar, tapi butuh 12 turn. Mekanismenya: setiap perbaikan kode
+mengirim ulang **seluruh blok deklarasi + kode yang gagal + pesan error**.
+Direct mode yang gagal cukup mengulang satu tool call.
 
-Dari 48 run `cc/claude-sonnet-5-5` pada grid 10/30/60 tool: **semua benar**,
-dua mode, dan **nol pengecoh terpanggil**. Itu hasil yang sahih - tidak
-bergantung pada hitungan token.
+Jadi kerugian code mode saat gagal **jauh lebih besar** daripada keuntungannya
+saat berhasil — dan blog tidak membahas ini sama sekali.
 
-Jumlah turn juga sahih dan konsisten: code mode hampir selalu **2 turn**
-(satu tulis kode + satu jawab), sementara direct mode naik bersama jumlah
-call (c2: 3 turn/9 call, k1: 4 turn/3 call).
+### Implikasi praktis
 
-### Yang TIDAK sahih: angka token
+Pernyataan yang bisa dipertanggungjawabkan dari data ini:
 
-Tiga hal ditemukan, berurutan:
+1. **Code mode bukan penghematan tanpa syarat.** Nilai harapannya bergantung
+   pada tingkat kode-jadi-sekali. Pada 50%, nilai harapannya negatif.
+2. **Metrik yang harus dipantau adalah tingkat jadi-sekali**, bukan jumlah
+   tool. Itu metrik yang tidak ada di blog maupun di implementasi lain yang
+   diperiksa.
+3. **Task single-call selalu kalah** (median 1,43x) — sesuai rancangan. Kalau
+   kategori ini menang, pengukurannya patut dicurigai.
+4. **Yang paling menguntungkan code mode adalah control-flow** (0,68x): loop
+   polling dikerjakan di dalam kode, bukan lewat bolak-balik agent loop. Ini
+   sesuai contoh di blog Anthropic.
 
-**1. Saya salah menuduh `usage_metadata` ADK.** Awalnya saya simpulkan ADK
-salah lapor karena token input identik untuk 10/30/60 tool. Setelah diukur
-dari kabel lewat `eval/token_proxy.py`, ternyata **angka ADK persis sama
-dengan kabel** (2.105 + 2.002 = 4.107, tepat seperti laporan ADK). Pembukuan
-ADK benar.
+### Yang akan memperbaiki angkanya
 
-**2. Endpoint kemungkinan memakai prompt caching.** Request code mode membawa
-`system` 26.492 char, tapi dilaporkan hanya `prompt_tokens=2105`. Untuk teks
-nyata endpoint ini konsisten di ~2,1 char/token, jadi 26.492 char seharusnya
-~12.600 token. Selisih 6x itu paling masuk akal dijelaskan oleh prompt
-caching, di mana `prompt_tokens` mengecualikan bagian yang ter-cache.
+Belum dikerjakan, tapi arahnya jelas dari data:
+
+- Naikkan tingkat jadi-sekali: contoh pemakaian di instruction, pesan error
+  yang lebih tajam, atau `deno check` atas kode model sebelum dieksekusi.
+- Batasi biaya perbaikan: jangan kirim ulang blok deklarasi penuh di turn
+  perbaikan.
+- Ukur 60 tool untuk melengkapi sumbu.
+
+### Catatan model
+
+| model | endpoint | catatan |
+|---|---|---|
+| `gemini-3.5-flash` | Gemini API | **dihentikan** atas permintaan pemilik proyek |
+| `ag/gemini-3.8-flash` | proxy OpenAI-compatible | 32 run; **token tidak sahih** (dugaan prompt caching) |
+| `cc/claude-sonnet-5-5` | proxy OpenAI-compatible | 48 run; correctness sahih, token tidak sahih |
+
+**Token tidak sebanding lintas endpoint.** Task `s1` dilaporkan 1.574 token
+lewat Gemini API langsung dan 7.533 lewat proxy — endpoint menyuntikkan system
+prompt ~3,2k token.
+
+### Dugaan prompt caching: belum terverifikasi
+
+Request code mode membawa `system` 26.492 char tapi dilaporkan
+`prompt_tokens=2105`. Endpoint itu konsisten ~2,1 char/token untuk teks nyata,
+jadi seharusnya ~12.600 token. Selisih 6x paling masuk akal dijelaskan prompt
+caching, di mana `prompt_tokens` mengecualikan bagian ter-cache.
 
 Kalau benar, `prompt_tokens` mengukur **biaya tagihan**, bukan **ukuran
-konteks** - dan nilainya bergantung pada urutan eksekusi (run pertama bayar
-penuh, sisanya tidak). Perbandingan direct vs code mode jadi tidak sahih
-kecuali keadaan cache dikendalikan.
+konteks** — dan nilainya bergantung urutan eksekusi. `eval/token_proxy.py`
+sudah menghitung `request_tokens` sendiri dengan tiktoken untuk kasus ini,
+tapi hipotesisnya belum dikonfirmasi lewat field cache di objek `usage`.
 
-**Hipotesis ini BELUM terverifikasi.** Rencananya menyimpan objek `usage`
-utuh (mencari field `cache_read_input_tokens`), tapi belum terlaksana.
-
-**3. ADK hanya mendeklarasikan 1 tool ke model.** Catatan kabel menunjukkan
-`n_tools_declared: 1` (`execute_code`) untuk code mode - itu memang benar.
-Tapi perlu diverifikasi berapa yang dideklarasikan di **direct** mode;
-diagnostik saya menimpa berkasnya sebelum terbaca (`_reset_wire()` memotong
-per-run, jadi yang tersisa hanya run terakhir). Kalau direct mode juga hanya
-mengirim sedikit tool, **seluruh sumbu jumlah-tool tidak mengukur apa pun**.
-
-### Kesalahan saya yang merusak
-
-Saat membersihkan proxy, pola `taskkill` saya `":2012[89].*LISTENING"` ikut
-mencocokkan port **20128** - yaitu layanan LiteLLM milik pengguna, bukan hanya
-proxy saya di 20129. **Layanan itu saya matikan.** Pola yang benar mencocokkan
-port secara tepat:
-
-```bash
-netstat -ano | awk '$2 ~ /:20129$/ && $4=="LISTENING" {print $5}'
-```
-
-Pengukuran Bagian B berhenti di sini sampai layanan itu hidup lagi.
-
-### Langkah berikutnya, berurutan
-
-1. Hidupkan kembali layanan di port 20128.
-2. Simpan objek `usage` utuh di proxy; cari field cache. Kalau ada,
-   gunakan `request_tokens` (dihitung sendiri dengan tiktoken di proxy)
-   sebagai metrik utama - deterministik dan tidak terpengaruh cache.
-3. Verifikasi berapa tool yang benar-benar dideklarasikan di direct mode.
-   Kalau hanya 1, sumbu jumlah-tool harus dirancang ulang.
-4. Baru jalankan grid penuh dan isi tabel hasil.
-
-Sampai ketiganya selesai, **jangan kutip angka token dari dokumen ini.**

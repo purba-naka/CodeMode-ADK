@@ -59,23 +59,28 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
-LITELLM_BASE = os.environ.get("LITELLM_BASE_URL", "")
+LITELLM_BASE = os.environ.get("LITELLM_BASE_URL", "").strip()
+
+#: Jalur Gemini API langsung DIMATIKAN atas permintaan pemilik proyek.
+#: Seluruh eval harus lewat endpoint OpenAI-compatible yang dikonfigurasi
+#: sendiri. Guard ini ada supaya key yang kebetulan ada di environment tidak
+#: terpakai tanpa sengaja.
+ALLOW_GEMINI_DIRECT = False
 #: Berkas yang diisi `eval/token_proxy.py`. Kalau ada, angka token diambil
 #: dari KABEL - bukan dari `usage_metadata` ADK, yang terbukti salah lewat
 #: LiteLlm (melaporkan 4107 untuk 10/30/60 tool sekaligus).
 WIRE_USAGE = Path(os.environ.get("WIRE_USAGE", "build/wire_usage.jsonl"))
-MODEL = os.environ.get(
-    "EVAL_MODEL", "ag/gemini-3.8-flash" if LITELLM_BASE else "gemini-3.5-flash"
-)
+MODEL = os.environ.get("EVAL_MODEL", "cc/claude-sonnet-5-5")
 
 
 def make_model() -> Any:
-    """Model untuk `LlmAgent`.
-
-    Dengan `LITELLM_BASE_URL` terisi, dipakai endpoint OpenAI-compatible lewat
-    `LiteLlm`. Tanpa itu, nama model diteruskan apa adanya ke Gemini API.
-    """
+    """Model untuk `LlmAgent`, selalu lewat endpoint OpenAI-compatible."""
     if not LITELLM_BASE:
+        if not ALLOW_GEMINI_DIRECT:
+            raise RuntimeError(
+                "LITELLM_BASE_URL belum diset. Jalur Gemini API langsung "
+                "dimatikan di proyek ini - isi LITELLM_BASE_URL di .env."
+            )
         return MODEL
     from google.adk.models.lite_llm import LiteLlm
 
@@ -427,11 +432,54 @@ def summarise(rows: list[Run]) -> None:
                     f"{a['in_median']:>8} {a['turn_median']:>5}"
                 )
 
+    # --- analisis penentu: kode berhasil di percobaan pertama atau tidak ---
+    # Korelasinya ternyata BUKAN dengan jumlah tool, tapi dengan ini.
+    # `turns == 2` berarti satu tulis-kode lalu jawab, tanpa perbaikan.
+    print("\n=== penentu: kode jadi dalam satu kali atau perlu diperbaiki")
+    print(f"{'kelompok':<22} {'n':>3} {'median rasio':>13} {'median turn':>12}")
+    pairs: list[tuple[Run, Run]] = []
+    for c in rows:
+        if c.mode != "code":
+            continue
+        d = next(
+            (
+                x
+                for x in rows
+                if x.mode == "direct"
+                and x.task == c.task
+                and x.n_tools == c.n_tools
+                and x.schema == c.schema
+            ),
+            None,
+        )
+        if d and tin(d):
+            pairs.append((d, c))
+
+    groups = {
+        "sekali jadi (turn=2)": [p for p in pairs if p[1].turns <= 2],
+        "perlu diperbaiki (>2)": [p for p in pairs if p[1].turns > 2],
+    }
+    for label, sel in groups.items():
+        if not sel:
+            continue
+        ratios = [tin(c) / tin(d) for d, c in sel]
+        turns = [c.turns for _d, c in sel]
+        print(f"{label:<22} {len(sel):>3} {statistics.median(ratios):>12.2f}x "
+              f"{statistics.median(turns):>12}")
+
+    first_try = len(groups["sekali jadi (turn=2)"])
+    if pairs:
+        print(f"\nkode jadi sekali: {first_try}/{len(pairs)} "
+              f"({first_try / len(pairs):.0%})")
+
     wired = sum(1 for r in rows if r.wire_in)
-    print(
-        f"\nsumber token: {wired}/{len(rows)} run dari kabel; sisanya dari "
-        "usage_metadata ADK, yang TIDAK dipercaya lewat LiteLlm"
-    )
+    if wired:
+        print(f"\nsumber token: {wired}/{len(rows)} run diukur dari kabel")
+    else:
+        print(
+            f"\nsumber token: usage_metadata ADK "
+            f"({', '.join(sorted({r.endpoint for r in rows}))})"
+        )
 
     print("\n=== gerbang promosi")
     for n in sorted({r.n_tools for r in rows}):
@@ -499,14 +547,17 @@ def main() -> int:
         summarise(runs)
         payload = [asdict(r) for r in runs]
     else:
-        if not LITELLM_BASE and not os.environ.get("GOOGLE_API_KEY"):
+        if not LITELLM_BASE:
             print(
-                "set LITELLM_BASE_URL (di .env) atau GOOGLE_API_KEY",
+                "LITELLM_BASE_URL belum diset (lihat .env). Jalur Gemini API "
+                "langsung dimatikan di proyek ini.",
                 file=sys.stderr,
             )
             return 2
-        where = LITELLM_BASE or "Gemini API langsung"
-        print(f"model: {MODEL} via {where} | schema: {ns.schema} | grid: {grid}\n")
+        print(
+            f"model: {MODEL} via {LITELLM_BASE} | "
+            f"schema: {ns.schema} | grid: {grid}\n"
+        )
         runs = asyncio.run(
             part_b(grid, ns.schema, ids, ns.repeats, jsonl, not ns.no_resume)
         )
