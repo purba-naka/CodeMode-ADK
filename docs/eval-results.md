@@ -32,40 +32,85 @@ tidak berarti.
 
 ## Bagian A — Biaya konteks (tanpa LLM)
 
-Deterministik, instan. Mengukur biaya **definisi tool**, bukan hasil antara.
+Sumber: `eval/diag_declared_tools.py`. Deterministik, reproducible, tidak
+butuh LLM.
 
-| tool | schema | direct (char) | code (char) | rasio |
-|---:|:---|---:|---:|---:|
-| 10 | flat | 2.248 | 5.030 | 2,24x |
-| 30 | flat | 6.711 | 13.189 | 1,97x |
-| 60 | flat | 13.305 | 25.219 | 1,90x |
-| 10 | nested | 5.318 | 6.818 | 1,28x |
-| 30 | nested | 15.921 | 18.617 | 1,17x |
-| 60 | nested | 31.725 | 36.107 | 1,14x |
-| 10 | oneof | 7.224 | 7.702 | 1,07x |
-| 30 | oneof | 20.807 | 20.361 | **0,98x** |
-| 60 | oneof | 41.081 | 39.141 | **0,95x** |
+Diukur dari **deklarasi yang benar-benar dibangun ADK** (`LlmRequest` disusun
+lewat `tool.process_llm_request()`, sama seperti flow), ditambah panjang
+instruction. Apel-ke-apel: direct mode membayar di deklarasi tool, code mode
+membayar di instruction.
+
+### Validasi sumbu grid lebih dulu
+
+Sebelum angkanya berarti, satu hal harus dibuktikan: apakah ADK benar-benar
+mendeklarasikan sebanyak tool yang diminta?
+
+| mode | 10 | 30 | 60 |
+|---|---:|---:|---:|
+| direct, tool dideklarasikan | 10 | 30 | 60 |
+| code, tool dideklarasikan | 1 | 1 | 1 |
+
+Ya. Direct mode mendeklarasikan tepat sejumlah grid; code mode tepat satu
+(`execute_code`, 484 char, **konstan** di semua titik grid). **Sumbu
+jumlah-tool sahih.**
+
+Ini perlu diperiksa karena catatan kabel sebelumnya menunjukkan
+`n_tools_declared: 1` dan sempat memunculkan dugaan bahwa ADK memotong daftar
+tool - yang kalau benar akan membuat seluruh grid tidak mengukur apa pun.
+
+### Hasil
+
+Total konteks dalam char (deklarasi + instruction):
+
+| schema | tool | direct | code | rasio |
+|:---|---:|---:|---:|---:|
+| flat | 10 | 2.750 | 6.683 | 2,43x |
+| flat | 30 | 12.979 | 14.842 | 1,14x |
+| flat | 60 | 25.483 | 26.872 | 1,05x |
+| nested | 10 | 7.646 | 8.471 | 1,11x |
+| nested | 30 | 22.189 | 20.270 | **0,91x** |
+| nested | 60 | 43.903 | 37.760 | **0,86x** |
+| oneof | 10 | 9.552 | 9.355 | **0,98x** |
+| oneof | 30 | 27.075 | 22.014 | **0,81x** |
+| oneof | 60 | 53.259 | 40.794 | **0,77x** |
 
 ### Bacaan
 
-**Code mode TIDAK otomatis lebih hemat konteks.** Pada schema sederhana,
-deklarasi TS justru ~2x lebih besar dari definisi tool langsung.
+Perbaikan **monoton di kedua sumbu**, dan itu persis arah dua klaim pertama
+blog:
 
-Tapi arah trennya konsisten dan monoton di kedua sumbu, dan ada **titik
-silang**: pada schema `oneof` dengan >=30 tool, code mode menjadi lebih kecil.
-Alasannya schema kompleks membengkakkan direct mode lebih cepat daripada
-membengkakkan TS - `oneOf` + enum besar jadi union TS yang padat.
+- **lebih banyak tool** -> flat 2,43x -> 1,14x -> 1,05x
+- **tool lebih kompleks** -> pada 60 tool: 1,05x -> 0,86x -> 0,77x
 
-Ini mendukung arah klaim "more complex tools", tapi **membantah** pembacaan
-naif bahwa code mode selalu memangkas konteks. Penghematan utamanya harus
-datang dari **hasil antara** (klaim 3), bukan dari definisi tool.
+Titik silang (code mode jadi lebih murah):
 
-### Peringatan metodologi
+| schema | silang di |
+|---|---|
+| flat | belum, tapi mendekati 1,0 |
+| nested | 30 tool |
+| oneof | 10 tool |
 
-Angka `direct` adalah **proxy**: `len(json.dumps(input_schema)) + description +
-name` per tool. Definisi tool yang sebenarnya dikirim ke Gemini punya
-pembungkus tambahan, jadi proxy ini kemungkinan **meremehkan** direct mode.
-Angka ground-truth ada di Bagian B lewat `usage_metadata`.
+Kasus terbaik 60 tool + `oneof`: **23% lebih hemat konteks**.
+
+Penyebabnya jelas: biaya code mode untuk *deklarasi tool* **konstan** (484
+char, satu tool), sementara direct mode naik linear terhadap jumlah dan
+kompleksitas tool. Blok instruction code mode juga naik, tapi lebih lambat -
+`oneOf` + enum besar jadi union TS yang padat, sedangkan di JSON Schema
+bentuknya bertele-tele.
+
+Tapi perhatikan juga: **code mode TIDAK otomatis lebih hemat.** Pada katalog
+kecil berschema sederhana dia 2,4x lebih mahal. Penghematannya datang dari
+skala dan kompleksitas, bukan dari polanya sendiri.
+
+### Pengukuran lama (proxy) - DIGANTIKAN
+
+Versi pertama memakai proxy `len(json.dumps(input_schema)) + description +
+name` dan menghasilkan rasio 1,90-2,24x pada flat. Angka itu **meremehkan
+direct mode ~2x**: untuk 60 tool flat, proxy menghitung 13.305 char sementara
+deklarasi ADK yang sebenarnya 25.471 char.
+
+Peringatan soal ini sudah ditulis sejak awal, dan terbukti benar. Jangan
+pakai angka proxy itu.
 
 ---
 
