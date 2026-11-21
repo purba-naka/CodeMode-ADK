@@ -268,6 +268,34 @@ blok komentar dibuang.
 Gerbang keluar: skrip yang memanggil 3 tool berantai, memfilter hasil, dan hanya
 me-log ringkasannya berhasil; dan upaya akses jaringan di dalam sandbox gagal.
 
+> **Status: LOLOS 2026-11-21.** 28 test sandbox (64 total), `runtime.ts`
+> type-check + lint bersih, ruff bersih.
+
+#### Temuan Fase 2: `--deny-net` tidak memblokir module import
+
+Module loader Deno punya allow-list **bawaan** (`esm.sh`, `cdn.jsdelivr.net`,
+`raw.githubusercontent.com`, ...). Dengan `--deny-net` saja,
+`await import("https://esm.sh/lodash")` **berhasil** dan `import "npm:lodash"`
+mengunduh dari registry npm — kanal eksfiltrasi lewat URL.
+
+`--deny-import` tidak memperbaikinya; `--cached-only` lebih buruk. Perbaikan:
+**`--no-remote --no-npm`**. Detail di `docs/tech-stack.md`.
+
+#### Pesan protokol BISA dipalsukan kode model
+
+`console.log` dibajak, tapi `Deno.stdout.writeSync` tidak — jadi kode model
+dapat menulis pesan `call`/`done`/`log` palsu langsung ke stdout.
+
+Dianalisis, bukan diabaikan:
+- `call` palsu tetap **dihitung** host dan tetap melewati `RpcBridge`, jadi
+  kebijakan dan batas tetap berlaku. Bukan eskalasi hak.
+- `done` palsu hanya menghentikan eksekusinya sendiri. Merugikan diri sendiri.
+- `log` palsu hanya menambah log.
+
+Konsekuensi desain: **semua batas ditegakkan di host**, bukan di sandbox.
+Penjaga sisi sandbox hanya untuk gagal-cepat. Ada test yang memalsukan 10 `call`
+lewat stdout mentah dan membuktikan host tetap menutup di `max_calls`.
+
 ### Fase 3 — Integrasi ADK
 
 - `ExecuteCodeTool` sebagai `FunctionTool` biasa.

