@@ -38,7 +38,7 @@ from codemode.adk import CodeMode
 from codemode.catalog import build_catalog, enable_json_schema_feature
 from codemode.codegen import typescript
 from codemode.sandbox import Limits
-from eval.tasks import TASKS, Task
+from eval.tasks import BIGDATA_IDS, TASKS, Task, apply_bigdata_checks
 
 PY = sys.executable
 
@@ -99,19 +99,22 @@ CORE = {
 }
 
 
-def toolset(n_tools: int, schema: str) -> McpToolset:
+#: Baris per wilayah di mock server. 0 = dataset kecil (12 pesanan).
+ROWS = int(os.environ.get("EVAL_ROWS", "0"))
+
+
+def toolset(n_tools: int, schema: str, rows: int | None = None) -> McpToolset:
+    args = [
+        str(ROOT / "eval" / "mock_server.py"),
+        "--tools", str(n_tools),
+        "--schema", schema,
+    ]
+    r = ROWS if rows is None else rows
+    if r:
+        args += ["--rows", str(r)]
     return McpToolset(
         connection_params=StdioConnectionParams(
-            server_params=StdioServerParameters(
-                command=PY,
-                args=[
-                    str(ROOT / "eval" / "mock_server.py"),
-                    "--tools",
-                    str(n_tools),
-                    "--schema",
-                    schema,
-                ],
-            ),
+            server_params=StdioServerParameters(command=PY, args=args),
             timeout=60,
         )
     )
@@ -183,8 +186,12 @@ class Run:
     wall_ms: float = 0.0
     answer: str = ""
     error: str = ""
-    #: Dari kabel lewat token_proxy (sumber yang dipercaya). 0 = tidak terukur.
+    #: Kode yang gagal + errornya, untuk diagnosa (bukan tebakan).
+    failures: list[str] = field(default_factory=list)
+    #: Dihitung di proxy dengan tokenizer konsisten - METRIK UTAMA.
     wire_in: int = 0
+    #: Angka provider, disimpan untuk pembanding. Tidak dipakai menyimpulkan.
+    wire_provider_in: int = 0
     wire_out: int = 0
     wire_calls: int = 0
     #: Token tidak sebanding lintas model/endpoint - tokenizer dan system
@@ -204,16 +211,30 @@ def _reset_wire() -> None:
         WIRE_USAGE.write_text("", encoding="utf-8")
 
 
-def _read_wire() -> tuple[int, int, int]:
-    """(prompt, completion, jumlah request) dari lalu lintas HTTP sebenarnya."""
+def _read_wire() -> tuple[int, int, int, int]:
+    """(self_prompt, provider_prompt, completion, jumlah request).
+
+    `self_prompt` dihitung di proxy dengan tokenizer yang konsisten. Itulah
+    metrik utama, karena angka provider terbukti tidak konsisten:
+
+      request 15.704 char -> tiktoken 4.312 token, provider lapor 2.133
+      system 26.000 char  -> provider lapor 15.538 (1,67 char/token)
+
+    Dua angka provider itu saling bertentangan (yang satu meremehkan ~2x,
+    yang lain melebihkan), jadi tidak bisa dipakai membandingkan ukuran
+    prompt. Hipotesis prompt caching sudah DIUJI dan TERBANTAHKAN: prompt
+    identik yang dikirim 3x berturut melaporkan angka yang persis sama, dan
+    prompt yang diubah pun sama.
+    """
     if not WIRE_USAGE.exists():
-        return 0, 0, 0
+        return 0, 0, 0, 0
     rows = [
         json.loads(x)
         for x in WIRE_USAGE.read_text(encoding="utf-8").splitlines()
         if x.strip()
     ]
     return (
+        sum(r.get("request_tokens") or 0 for r in rows),
         sum(r.get("prompt_tokens") or 0 for r in rows),
         sum(r.get("completion_tokens") or 0 for r in rows),
         len(rows),
@@ -293,8 +314,15 @@ async def run_one(
         else:
             await ts.close()
 
-    wire_in, wire_out, wire_calls = _read_wire()
+    wire_in, wire_provider_in, wire_out, wire_calls = _read_wire()
 
+    failures: list[str] = []
+    if cm is not None:
+        for code_str, status, err in cm.trace:
+            if status != "done":
+                failures.append(
+                    f"[{status}] {err}\n--- kode ---\n{code_str}"
+                )
     return Run(
         task=task.id,
         kind=task.kind,
@@ -313,7 +341,9 @@ async def run_one(
         wall_ms=(time.perf_counter() - t0) * 1000,
         answer=answer.strip()[:300],
         error=error,
+        failures=failures,
         wire_in=wire_in,
+        wire_provider_in=wire_provider_in,
         wire_out=wire_out,
         wire_calls=wire_calls,
     )
@@ -345,7 +375,15 @@ async def part_b(
     per-run plus `--resume`, run bisa dipotong sesuai batas waktu dan
     dilanjutkan.
     """
-    tasks = [t for t in TASKS if not task_ids or t.id in task_ids]
+    if ROWS:
+        apply_bigdata_checks(ROWS)
+    tasks = [
+        t
+        for t in TASKS
+        if (not task_ids or t.id in task_ids)
+        # task bigdata tidak berarti pada dataset kecil
+        and (ROWS or t.id not in BIGDATA_IDS)
+    ]
 
     done: set[tuple[str, str, int, str]] = set()
     rows: list[Run] = []
@@ -423,7 +461,7 @@ def summarise(rows: list[Run]) -> None:
 
     print("\n=== per kategori task")
     print(f"{'kind':<9} {'mode':<7} {'benar':>7} {'in':>8} {'turn':>5}")
-    for kind in ("single", "chain", "data", "control"):
+    for kind in ("single", "chain", "data", "bigdata", "control"):
         for mode in ("direct", "code"):
             a = agg([r for r in rows if r.kind == kind and r.mode == mode])
             if a:
@@ -474,7 +512,11 @@ def summarise(rows: list[Run]) -> None:
 
     wired = sum(1 for r in rows if r.wire_in)
     if wired:
-        print(f"\nsumber token: {wired}/{len(rows)} run diukur dari kabel")
+        print(
+            f"\nsumber token: {wired}/{len(rows)} run dihitung di proxy "
+            "dengan tiktoken (angka provider tidak konsisten - lihat "
+            "_read_wire)"
+        )
     else:
         print(
             f"\nsumber token: usage_metadata ADK "

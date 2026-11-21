@@ -7,30 +7,56 @@ memanggil API itu di sandbox — bukan memanggil tool satu per satu.
 Dibangun sebagai **eksperimen yang diukur**, bukan sebagai library siap pakai.
 Pertanyaannya: apakah klaim blog itu bertahan di ADK?
 
-## Jawaban singkat: bertahan secara kondisional
+## Jawaban singkat: bertahan, dengan dua syarat yang blog tidak sebut
 
-Klaim blog ada tiga. Hasil pengukuran:
+Klaim blog ada tiga. Hasil pengukuran (`cc/claude-sonnet-5-5`, 48 run grid
+penuh + sapuan ukuran payload):
 
 | Klaim blog | Hasil |
 |---|---|
-| "handle **many more tools**" | ✅ didukung — biaya deklarasi code mode **konstan**, direct naik linear |
-| "handle **more complex tools**" | ✅ didukung, efek terkuat — `oneOf` + enum besar jauh lebih padat sebagai union TS |
-| "shines when **stringing together multiple calls**" | ⚠️ **hanya kalau kodenya jadi sekali** |
+| "handle **many more tools**" | ✅ sebagian — hemat di biaya deklarasi (hingga −23%), tapi akurasi pemilihan tool tidak pernah jadi masalah sampai 60 tool |
+| "handle **more complex tools**" | ✅ didukung, efek terkuat |
+| "shines when **stringing together multiple calls**" | ✅ **terbukti kuat** — tapi penyebabnya **ukuran hasil antara**, bukan jumlah call |
 
-Temuan yang blog tidak sebut sama sekali, dan ternyata paling menentukan:
+Hasil paling tegas — menyapu ukuran payload pada task identik, 10 tool:
+
+| payload 1 wilayah | tanpa code mode | dengan code mode | rasio |
+|---:|---:|---:|---:|
+| 692 char | 3.527 tok | 4.292 tok | 1,22× |
+| 1.714 char | 6.053 | 4.320 | **0,71×** |
+| 5.135 char | 14.483 | 4.333 | **0,30×** |
+| 17.156 char | 43.947 | 4.388 | **0,10×** |
+| 34.332 char | 86.037 | 4.322 | **0,05×** |
 
 ```
-kode jadi sekali (turn=2)   : 0,85x token  -> code mode 15% lebih murah
-perlu diperbaiki (turn>2)   : 2,06x token  -> code mode 2x lebih mahal
-tingkat jadi-sekali          : 8/16 (50%)  pada gemini-3.5-flash
+code mode : ~4.300 token, DATAR - tidak peduli payload sebesar apa
+direct    : linear terhadap ukuran payload
 ```
 
-Jadi penentunya **bukan jumlah tool**, tapi **apakah kode generasi model jalan
-di percobaan pertama**. Saat gagal, setiap perbaikan mengirim ulang seluruh blok
-deklarasi + kode yang gagal + error — biayanya naik jauh lebih cepat daripada
-direct mode yang cukup mengulang satu tool call.
+Semua benar di kedua mode. Titik silang ada di sekitar 1 KB payload per tool
+call.
 
-Detail lengkap: [`docs/eval-results.md`](docs/eval-results.md).
+### Dua syarat yang menentukan
+
+**1. Kode model harus jadi di percobaan pertama.** Kalau gagal, tiap perbaikan
+mengirim ulang blok deklarasi + kode gagal + error — jauh lebih mahal daripada
+direct mode yang cukup mengulang satu tool call. Dan tingkatnya **tergantung
+model**:
+
+| model | kode jadi sekali |
+|---|---|
+| `gemini-3.5-flash` | 8/16 (50%) → code mode kalah 11/16 |
+| `cc/claude-sonnet-5-5` | **24/24 (100%)** |
+
+**2. Harus ada hasil antara yang layak disaring.** Di bawah ~1–2 KB per tool
+call, blok deklarasi lebih mahal daripada yang dihemat. Pada dataset kecil
+(12 baris), code mode kalah **+24% sampai +69%** di semua titik grid.
+
+Keduanya tidak dibahas di blog, dan keduanya menentukan apakah code mode
+untung atau rugi.
+
+Detail lengkap, termasuk kesalahan pengukuran yang sempat terjadi:
+[`docs/eval-results.md`](docs/eval-results.md).
 
 ## Status
 
@@ -40,7 +66,7 @@ Detail lengkap: [`docs/eval-results.md`](docs/eval-results.md).
 | 1 — Catalog + Codegen TS | ✅ gerbang lolos |
 | 2 — Sandbox + RPC | ✅ 28 test |
 | 3 — Integrasi ADK | ✅ gerbang lolos |
-| 4 — Evaluasi | ⚠️ sebagian: biaya konteks lengkap, correctness lengkap, grid token baru 10/30 |
+| 4 — Evaluasi | ✅ grid 10/30/60 lengkap + sapuan ukuran payload |
 | 5 — Pengerasan | ⬜ belum |
 
 84 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
@@ -159,7 +185,9 @@ dan jalur `direct` (ditunda).
 - **Tidak ada tool call paralel di lengan Python** (belum dibuat) — hanya
   relevan kalau `Codegen` Python dipakai.
 - `elicitation` / `sampling` / `roots` **tidak didukung**.
-- Grid token Bagian B baru 10 dan 30 tool; **60 tool belum terukur**.
+- Angka token dihitung sendiri di `eval/token_proxy.py` dengan tiktoken, bukan
+  dari `prompt_tokens` provider — yang terbukti tidak konsisten (meremehkan 2x
+  pada satu kasus, melebihkan 2x pada kasus lain).
 - `Catalog` masih memakai satu API privat ADK (`_mcp_tool.outputSchema`).
   Input schema sudah lewat jalur publik, dan kalau yang privat hilang,
   degradasinya mulus ke index signature.

@@ -162,117 +162,126 @@ Server filesystem: 14.211 -> **10.271 char**.
 
 ## Bagian B — Correctness & token (dengan LLM)
 
-Sumber: `build/eval_gemini-3.5-flash.jsonl`, 32 run.
-**Grid belum lengkap** — baru 10 dan 30 tool; 60 tool belum terukur.
+Sumber: `build/eval_cc_claude-sonnet-5-5.jsonl` (48 run, grid lengkap) dan
+`build/eval_sweep_r*.jsonl` + `build/eval_bigdata_r50.jsonl` (sapuan ukuran
+payload).
 
-> Pengumpulan data dihentikan atas permintaan pemilik proyek: jalur Gemini API
-> langsung dimatikan (`ALLOW_GEMINI_DIRECT = False` di `eval/harness.py`).
-> Kelanjutannya harus lewat endpoint OpenAI-compatible.
+Model: `cc/claude-sonnet-5-5` lewat endpoint OpenAI-compatible.
 
-### Correctness: sempurna di kedua mode
+### Sumber angka token
 
-| | direct | code |
+**Dihitung sendiri di `eval/token_proxy.py`** dengan tiktoken `o200k_base` atas
+body permintaan HTTP yang sebenarnya. Bukan dari `prompt_tokens` provider,
+karena angka itu terbukti tidak konsisten:
+
+| diukur | tiktoken | lapor provider |
+|---|---:|---:|
+| request code mode, 15.704 char | 4.312 | 2.133 (meremehkan ~2x) |
+| system prompt 26.000 char | ~7.000 | 15.538 (melebihkan ~2x) |
+
+Dua-duanya tidak bisa benar sekaligus, jadi angka provider tidak dipakai
+menyimpulkan apa pun.
+
+**Hipotesis prompt caching: DIUJI dan TERBANTAHKAN.** Prompt identik dikirim
+3x berturut melaporkan `prompt_tokens` yang persis sama (15.538), dan prompt
+yang diubah pun sama. Tidak ada tanda caching.
+
+### Correctness: sempurna
+
+48/48 benar di kedua mode. **0 pengecoh terpanggil** di semua titik grid
+sampai 60 tool. Jadi klaim "handle many more tools" tidak terbukti lewat
+jalur akurasi pemilihan tool - akurasinya tidak pernah jadi masalah.
+
+### Tingkat kode-jadi-sekali tergantung model
+
+| model | jadi sekali | catatan |
 |---|---|---|
-| benar | 16/16 | 16/16 |
-| pengecoh terpanggil | 0 | 0 |
+| `gemini-3.5-flash` | 8/16 (50%) | task d2 sampai 12 turn / 19 call |
+| `cc/claude-sonnet-5-5` | **24/24 (100%)** | semua turn=2 |
 
-Juga dikonfirmasi oleh 48 run terpisah lewat `cc/claude-sonnet-5-5`:
-48/48 benar, 0 pengecoh.
+Ini mengubah kesimpulan sebelumnya. Dengan `gemini-3.5-flash`, biaya
+perbaikan kode mendominasi dan code mode kalah 11/16. Dengan
+`cc/claude-sonnet-5-5`, tidak ada satu pun perbaikan diperlukan.
 
-**Akurasi pemilihan tool tidak jadi masalah** pada katalog sampai 60 tool.
-Jadi klaim blog soal "handle many more tools" tidak terbukti lewat jalur
-akurasi — terbuktinya lewat biaya konteks (Bagian A).
+**Tingkat jadi-sekali adalah variabel paling menentukan, dan blog tidak
+membahasnya sama sekali.**
 
-### Token: tergantung satu hal, dan bukan jumlah tool
+### Grid jumlah tool, dataset KECIL (12 pesanan)
 
-| jumlah tool | akurasi | token direct | token code | selisih | gerbang |
-|---:|---|---:|---:|---:|---|
-| 10 | 100% → 100% | 4.877 | 4.213 | **−14%** | LOLOS |
-| 30 | 100% → 100% | 10.648 | 16.088 | **+51%** | gagal |
+| tool | akurasi | direct | code | selisih |
+|---:|---|---:|---:|---:|
+| 10 | 100% → 100% | 3.007 | 4.272 | +42% |
+| 30 | 100% → 100% | 5.263 | 8.881 | +69% |
+| 60 | 100% → 100% | 12.679 | 15.763 | +24% |
 
-Per kategori (median token input):
+Code mode kalah di semua titik. Perhatikan pola yang menjelaskannya:
 
-| kategori | direct | code | turn direct | turn code |
-|---|---:|---:|---:|---:|
-| single | 5.232 | 7.473 | 2,5 | 2,0 |
-| chain | 6.924 | 11.593 | 3,0 | 3,5 |
-| data | 7.744 | **30.548** | 3,0 | **7,5** |
-| control | 9.263 | **6.268** | 4,0 | **2,0** |
+```
+biaya code mode per titik grid:  4.272 / 8.881 / 15.763   <- nyaris DATAR
+                                  antar task di titik yang sama
+biaya direct mode:                bervariasi ikut jumlah tool call
+```
 
-Kategori `data` anjlok 4x. Itu bukan derau — ada penyebabnya.
+Biaya code mode didominasi blok deklarasi dan **tidak peduli isi task**.
+Dengan payload kecil, tidak ada yang bisa disaring - jadi deklarasi itu murni
+beban.
 
-### Temuan utama: penentunya adalah kode-jadi-sekali
+### Cacat rancangan task saya, dan perbaikannya
 
-Rincian per task memperlihatkan korelasi yang hampir sempurna:
+Task "data-heavy" saya cuma 12 pesanan. Itu **tidak berat**, dan artinya eval
+saya **tidak pernah menguji mekanisme utama yang diklaim blog**:
 
-| kelompok | n | median rasio | median turn |
-|---|---:|---:|---:|
-| kode jadi sekali (turn=2) | 8 | **0,85x** | 2,0 |
-| perlu diperbaiki (turn>2) | 8 | **2,06x** | 4,5 |
+> "the output of each tool call must feed into the LLM's neural network, just
+> to be copied over to the inputs of the next call, wasting time, energy, and
+> tokens"
 
-Tingkat jadi-sekali: **8/16 (50%)** pada `gemini-3.5-flash`.
+`eval/mock_server.py --rows N` sekarang bisa memperbesar dataset secara
+deterministik, dengan jawaban **tertutup** (tepat 1 dari 4 baris pending,
+`total = 10.000 + (i % 50) * 1.000`) sehingga tetap bisa diverifikasi
+otomatis.
 
-Contoh ekstrem, task `d2` ("sebutkan id pesanan dengan items >= 5"):
+### Hasil sapuan ukuran payload (task b1, 10 tool)
 
-| | turn | tool call | token input |
-|---|---:|---:|---:|
-| direct, 10 tool | 3 | 5 | 4.843 |
-| code, 10 tool | **12** | **19** | **38.089** (7,86x) |
-| code, 30 tool | 10 | 17 | 51.676 (4,89x) |
+| rows/wilayah | payload 1 wilayah | direct | code | rasio |
+|---:|---:|---:|---:|---:|
+| 2 | 692 char | 3.527 | 4.292 | 1,22x |
+| 5 | 1.714 char | 6.053 | 4.320 | **0,71x** |
+| 15 | 5.135 char | 14.483 | 4.333 | **0,30x** |
+| 50 | 17.156 char | 43.947 | 4.388 | **0,10x** |
+| 100 | 34.332 char | 86.037 | 4.322 | **0,05x** |
 
-Jawabannya benar, tapi butuh 12 turn. Mekanismenya: setiap perbaikan kode
-mengirim ulang **seluruh blok deklarasi + kode yang gagal + pesan error**.
-Direct mode yang gagal cukup mengulang satu tool call.
+Semua benar di kedua mode.
 
-Jadi kerugian code mode saat gagal **jauh lebih besar** daripada keuntungannya
-saat berhasil — dan blog tidak membahas ini sama sekali.
+```
+code mode : ~4.300 token, DATAR - tidak peduli payload sebesar apa
+direct    : linear terhadap ukuran payload
+```
 
-### Implikasi praktis
+Titik silang: payload per wilayah antara ~700 dan ~1.700 char.
 
-Pernyataan yang bisa dipertanggungjawabkan dari data ini:
+Pada payload 34 KB per wilayah, code mode **95% lebih hemat**. Mekanismenya
+persis seperti yang blog gambarkan: data disaring di dalam sandbox, hanya satu
+angka yang masuk konteks model.
 
-1. **Code mode bukan penghematan tanpa syarat.** Nilai harapannya bergantung
-   pada tingkat kode-jadi-sekali. Pada 50%, nilai harapannya negatif.
-2. **Metrik yang harus dipantau adalah tingkat jadi-sekali**, bukan jumlah
-   tool. Itu metrik yang tidak ada di blog maupun di implementasi lain yang
-   diperiksa.
-3. **Task single-call selalu kalah** (median 1,43x) — sesuai rancangan. Kalau
-   kategori ini menang, pengukurannya patut dicurigai.
-4. **Yang paling menguntungkan code mode adalah control-flow** (0,68x): loop
-   polling dikerjakan di dalam kode, bukan lewat bolak-balik agent loop. Ini
-   sesuai contoh di blog Anthropic.
+Diverifikasi juga di task kedua (b2, agregasi nilai, `rows=50`):
+direct 45.015 → code 4.422 token, **−90%**.
 
-### Yang akan memperbaiki angkanya
+### Kesimpulan yang bisa dipertanggungjawabkan
 
-Belum dikerjakan, tapi arahnya jelas dari data:
+| Klaim blog | Hasil |
+|---|---|
+| "many more tools" | ✅ **sebagian** — hemat di biaya deklarasi (Bagian A, hingga −23%), tapi di percakapan nyata masih +24% pada 60 tool dengan payload kecil. Akurasi pemilihan tool tidak pernah jadi masalah |
+| "more complex tools" | ✅ didukung (Bagian A), efek terkuat |
+| "shines when stringing together multiple calls" | ✅ **terbukti kuat**, tapi bukan karena jumlah call - karena **ukuran hasil antara**. −90% sampai −95% pada payload besar |
 
-- Naikkan tingkat jadi-sekali: contoh pemakaian di instruction, pesan error
-  yang lebih tajam, atau `deno check` atas kode model sebelum dieksekusi.
-- Batasi biaya perbaikan: jangan kirim ulang blok deklarasi penuh di turn
-  perbaikan.
-- Ukur 60 tool untuk melengkapi sumbu.
+Dua syarat agar code mode menguntungkan:
 
-### Catatan model
+1. **Kode model jadi di percobaan pertama.** Kalau tidak, tiap perbaikan
+   mengirim ulang blok deklarasi + kode gagal + error. Pada
+   `gemini-3.5-flash` (50% jadi-sekali) nilai harapannya negatif; pada
+   `cc/claude-sonnet-5-5` (100%) tidak jadi masalah.
+2. **Ada hasil antara yang layak disaring.** Di bawah ~1-2 KB per tool call,
+   blok deklarasi lebih mahal daripada yang dihemat.
 
-| model | endpoint | catatan |
-|---|---|---|
-| `gemini-3.5-flash` | Gemini API | **dihentikan** atas permintaan pemilik proyek |
-| `ag/gemini-3.8-flash` | proxy OpenAI-compatible | 32 run; **token tidak sahih** (dugaan prompt caching) |
-| `cc/claude-sonnet-5-5` | proxy OpenAI-compatible | 48 run; correctness sahih, token tidak sahih |
-
-**Token tidak sebanding lintas endpoint.** Task `s1` dilaporkan 1.574 token
-lewat Gemini API langsung dan 7.533 lewat proxy — endpoint menyuntikkan system
-prompt ~3,2k token.
-
-### Dugaan prompt caching: belum terverifikasi
-
-Request code mode membawa `system` 26.492 char tapi dilaporkan
-`prompt_tokens=2105`. Endpoint itu konsisten ~2,1 char/token untuk teks nyata,
-jadi seharusnya ~12.600 token. Selisih 6x paling masuk akal dijelaskan prompt
-caching, di mana `prompt_tokens` mengecualikan bagian ter-cache.
-
-Kalau benar, `prompt_tokens` mengukur **biaya tagihan**, bukan **ukuran
-konteks** — dan nilainya bergantung urutan eksekusi. `eval/token_proxy.py`
-sudah menghitung `request_tokens` sendiri dengan tiktoken untuk kasus ini,
-tapi hipotesisnya belum dikonfirmasi lewat field cache di objek `usage`.
+Keduanya tidak disebut di blog.
 

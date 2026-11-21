@@ -95,6 +95,9 @@ class CodeMode:
         self._tool_map: dict[tuple[str, str], BaseTool] = {}
         self._lock = asyncio.Lock()
         self.executions: list[Execution] = []
+        #: (kode, status, error) tiap eksekusi - untuk diagnosa kegagalan.
+        #: Tanpa ini, perbaikan prompt hanya tebakan.
+        self.trace: list[tuple[str, str, str | None]] = []
 
     # ----------------------------------------------------------------- setup
     async def prepare(self) -> Catalog:
@@ -187,6 +190,7 @@ class CodeMode:
             invoke=bridge.invoker(tool_context),
         )
         self.executions.append(result)
+        self.trace.append((code, result.status, result.error))
         return result
 
     # ------------------------------------------------------------- diagnostik

@@ -132,6 +132,31 @@ TASKS: list[Task] = [
         expect_tools={"list_regions", "get_orders_by_region"},
         note="filter + sortir di dalam kode",
     ),
+    # ---- 2 data BESAR: menguji mekanisme inti blog -----------------------
+    # Hanya dipakai dengan --rows > 0. Jawabannya tertutup: tepat 1 dari 4
+    # baris berstatus pending (lihat expand_orders).
+    Task(
+        id="b1",
+        kind="bigdata",
+        prompt=(
+            "Hitung ada berapa pesanan berstatus pending di seluruh wilayah. "
+            "Sebutkan angkanya saja."
+        ),
+        check=lambda t: True,  # diisi runtime oleh harness, lihat BIGDATA_CHECK
+        expect_tools={"list_regions", "get_orders_by_region"},
+        note="payload besar masuk, satu angka keluar - klaim inti blog",
+    ),
+    Task(
+        id="b2",
+        kind="bigdata",
+        prompt=(
+            "Dari seluruh wilayah, berapa nilai total pesanan yang statusnya "
+            "pending? Sebutkan angkanya saja."
+        ),
+        check=lambda t: True,
+        expect_tools={"list_regions", "get_orders_by_region"},
+        note="agregasi atas payload besar",
+    ),
     # ---- 1 control-flow ---------------------------------------------------
     Task(
         id="k1",
@@ -147,3 +172,33 @@ TASKS: list[Task] = [
 ]
 
 BY_ID = {t.id: t for t in TASKS}
+
+#: Task bigdata punya jawaban yang bergantung pada --rows, jadi checker-nya
+#: dibangun saat harness tahu ukuran datasetnya.
+BIGDATA_IDS = {"b1", "b2"}
+
+
+def bigdata_answers(rows_per_region: int) -> dict[str, int]:
+    """Jawaban tertutup untuk dataset hasil `expand_orders(rows_per_region)`.
+
+    Pola: status = [pending, shipped, cancelled, shipped][i % 4], jadi tepat
+    1 dari 4 baris pending. total = 10.000 + (i % 50) * 1.000.
+    """
+    n_regions = 4
+    pending_idx = [i for i in range(rows_per_region) if i % 4 == 0]
+    count = len(pending_idx) * n_regions
+    total = sum(10_000 + (i % 50) * 1_000 for i in pending_idx) * n_regions
+    return {"b1": count, "b2": total}
+
+
+def apply_bigdata_checks(rows_per_region: int) -> None:
+    """Pasang checker untuk task bigdata. Dataclass-nya frozen, jadi Task
+    diganti, bukan dimutasi."""
+    ans = bigdata_answers(rows_per_region)
+    for i, t in enumerate(TASKS):
+        if t.id in ans:
+            TASKS[i] = Task(
+                id=t.id, kind=t.kind, prompt=t.prompt,
+                check=has(ans[t.id]), expect_tools=t.expect_tools, note=t.note,
+            )
+            BY_ID[t.id] = TASKS[i]

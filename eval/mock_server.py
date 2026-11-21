@@ -94,6 +94,40 @@ ORDERS: list[dict[str, Any]] = [
 
 REGIONS = ["jakarta", "bandung", "surabaya", "medan"]
 
+
+def expand_orders(rows_per_region: int) -> list[dict[str, Any]]:
+    """Perbesar dataset secara deterministik.
+
+    Kenapa ini ada: 12 pesanan TIDAK berat, dan mekanisme utama yang diklaim
+    blog justru soal hasil antara yang besar -
+
+        "the output of each tool call must feed into the LLM's neural network,
+         just to be copied over to the inputs of the next call"
+
+    Tanpa payload besar, eval tidak pernah menguji klaim itu. Pola nilai
+    dibuat agar jawaban tetap bisa dihitung tertutup (lihat eval/tasks.py).
+    """
+    if rows_per_region <= 0:
+        return list(ORDERS)
+    out: list[dict[str, Any]] = []
+    for ri, region in enumerate(REGIONS):
+        for i in range(rows_per_region):
+            n = ri * rows_per_region + i
+            out.append({
+                "id": f"X{n:05d}",
+                "region": region,
+                # tepat 1 dari 4 pending -> jumlahnya mudah diverifikasi
+                "status": ["pending", "shipped", "cancelled", "shipped"][i % 4],
+                "total": 10_000 + (i % 50) * 1_000,
+                "items": 1 + (i % 9),
+                # bikin payload benar-benar besar, bukan cuma banyak baris
+                "catatan": (
+                    f"Pesanan {n} wilayah {region}. "
+                    "Keterangan tambahan untuk memperbesar muatan hasil. " * 3
+                ),
+            })
+    return out
+
 #: Antrian deploy untuk task control-flow: baru "complete" di polling ke-3.
 _DEPLOY_POLLS = {"n": 0}
 
@@ -421,7 +455,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tools", type=int, default=10)
     ap.add_argument("--schema", choices=["flat", "nested", "oneof"], default="flat")
+    ap.add_argument(
+        "--rows",
+        type=int,
+        default=0,
+        help="baris per wilayah; 0 = dataset kecil asli (12 pesanan total)",
+    )
     ns = ap.parse_args()
+
+    if ns.rows:
+        ORDERS[:] = expand_orders(ns.rows)
 
     tools = build_tools(ns.tools, ns.schema)
 
