@@ -27,7 +27,13 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 
-from codemode.catalog import Catalog, build_catalog, enable_json_schema_feature
+from codemode.catalog import (
+    Catalog,
+    DirectPolicy,
+    DirectSelector,
+    build_catalog,
+    enable_json_schema_feature,
+)
 from codemode.codegen import RENDERERS
 from codemode.sandbox import DenoSandbox, Execution, Limits
 
@@ -64,6 +70,22 @@ Aturan:
 ```typescript
 {declarations}
 ```
+{direct_block}"""
+
+#: Blok tambahan saat ada tool jalur `direct` (Fase 5). Tool destruktif tidak
+#: boleh dipanggil dari dalam sandbox: persetujuan pengguna, kredensial, dan
+#: jejak audit per-call adalah urusan agent loop, bukan urusan kode model.
+DIRECT_PROMPT = """
+## Tool yang dipanggil langsung
+
+Tool berikut **tidak ada** di dalam objek `tools` dan tidak bisa dipanggil
+dari kode. Panggil sebagai tool biasa, satu per satu:
+
+{listing}
+
+Polanya: pakai `execute_code` untuk membaca dan menyaring, lalu panggil tool
+di atas untuk tindakan yang mengubah sesuatu - dengan argumen yang sudah kamu
+pastikan dari hasil pembacaan itu.
 """
 
 
@@ -78,6 +100,8 @@ class CodeMode:
         language: str = "typescript",
         flat: bool | None = None,
         sandbox: DenoSandbox | None = None,
+        direct: DirectSelector | None = None,
+        direct_policy: DirectPolicy = DirectPolicy.OFF,
     ) -> None:
         if language not in RENDERERS:
             raise ValueError(
@@ -87,9 +111,12 @@ class CodeMode:
         self._sources = sources
         self._language = language
         self._flat_override = flat
+        self._direct = direct
+        self._direct_policy = direct_policy
         self._limits = limits or Limits()
         self._sandbox = sandbox or DenoSandbox(limits=self._limits)
 
+        self._direct_tools: list[BaseTool] = []
         self._catalog: Catalog | None = None
         self._declarations: str | None = None
         self._tool_map: dict[tuple[str, str], BaseTool] = {}
@@ -111,7 +138,16 @@ class CodeMode:
         async with self._lock:
             if self._catalog is not None:
                 return self._catalog
-            catalog = await build_catalog(self._sources)
+            catalog = await build_catalog(
+                self._sources,
+                direct=self._direct,
+                direct_policy=self._direct_policy,
+            )
+            # Peta untuk RpcBridge sengaja dibangun dari `catalog.tools`,
+            # BUKAN dari seluruh sumber. Kalau diisi semua tool, pesan
+            # protokol yang dipalsukan dari sandbox bisa menjangkau tool
+            # direct - persis yang jalur ini ingin cegah.
+            allowed = {(s.server, s.name) for s in catalog.tools}
             tool_map: dict[tuple[str, str], BaseTool] = {}
             for server, source in self._sources.items():
                 tools = (
@@ -120,8 +156,10 @@ class CodeMode:
                     else list(source)
                 )
                 for t in tools:
-                    tool_map[(server, t.name)] = t
+                    if (server, t.name) in allowed:
+                        tool_map[(server, t.name)] = t
             self._tool_map = tool_map
+            self._direct_tools = [d.tool for d in catalog.direct if d.tool]
             self._declarations = RENDERERS[self._language](
                 catalog, flat=self._flat_override
             )
@@ -142,8 +180,11 @@ class CodeMode:
 
     # ----------------------------------------------------------- instruction
     async def instruction_block(self) -> str:
-        await self.prepare()
-        return PROMPT.format(declarations=self.declarations)
+        catalog = await self.prepare()
+        return PROMPT.format(
+            declarations=self.declarations,
+            direct_block=_direct_block(catalog),
+        )
 
     def instruction_provider(
         self, base: str = ""
@@ -167,6 +208,25 @@ class CodeMode:
         from codemode.adk.execute_tool import ExecuteCodeTool
 
         return ExecuteCodeTool(self)
+
+    @property
+    def direct_toolset(self) -> BaseToolset:
+        """Tool jalur `direct` sebagai toolset.
+
+        Toolset, bukan list, karena isinya baru diketahui setelah `prepare()`
+        yang asinkron - sementara `LlmAgent(tools=[...])` dibangun sinkron.
+        ADK memanggil `get_tools()` saat menyusun request, jadi urutannya aman.
+        """
+        return _DirectToolset(self)
+
+    @property
+    def tools(self) -> list[BaseTool | BaseToolset]:
+        """Isi `LlmAgent(tools=...)`: satu tool eksekusi kode + jalur direct."""
+        return [self.tool, self.direct_toolset]
+
+    async def direct_tools(self) -> list[BaseTool]:
+        await self.prepare()
+        return list(self._direct_tools)
 
     # ------------------------------------------------------------- eksekusi
     async def execute(self, code: str, tool_context: Context) -> Execution:
@@ -198,9 +258,9 @@ class CodeMode:
         cat = self._catalog
         return {
             "tools": len(cat.tools) if cat else 0,
-            "rejected": [
-                {"tool": r.name, "reason": r.reason}
-                for r in (cat.rejected if cat else [])
+            "direct": [
+                {"tool": d.qualified, "reason": d.reason}
+                for d in (cat.direct if cat else [])
             ],
             "servers": cat.servers if cat else [],
             "declaration_chars": len(self._declarations or ""),
@@ -211,6 +271,31 @@ class CodeMode:
         for source in self._sources.values():
             if isinstance(source, BaseToolset):
                 await source.close()
+
+
+class _DirectToolset(BaseToolset):
+    """Pembungkus tipis supaya tool direct ikut terdeklarasi ke model."""
+
+    def __init__(self, code_mode: CodeMode) -> None:
+        super().__init__()
+        self._cm = code_mode
+
+    async def get_tools(
+        self, readonly_context: ReadonlyContext | None = None
+    ) -> list[BaseTool]:
+        return await self._cm.direct_tools()
+
+    async def close(self) -> None:
+        # Siklus hidup toolset asli dipegang `CodeMode.close()`; menutup di
+        # sini akan menutupnya dua kali.
+        return None
+
+
+def _direct_block(catalog: Catalog) -> str:
+    if not catalog.direct:
+        return ""
+    listing = "\n".join(f"- `{d.name}` - {d.reason}" for d in catalog.direct)
+    return DIRECT_PROMPT.format(listing=listing)
 
 
 def code_tool_declaration() -> types.FunctionDeclaration:

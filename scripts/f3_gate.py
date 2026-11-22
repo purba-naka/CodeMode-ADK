@@ -125,7 +125,7 @@ async def main() -> int:
 
         rep = cm.report()
         print(f"tool             : {rep['tools']}")
-        print(f"ditolak          : {len(rep['rejected'])}")
+        print(f"jalur direct     : {len(rep['direct'])}")
         print(f"deklarasi        : {rep['declaration_chars']} char")
 
         instruction, _ = await agent.canonical_instruction(ctx)

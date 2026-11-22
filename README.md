@@ -67,9 +67,10 @@ Detail lengkap, termasuk kesalahan pengukuran yang sempat terjadi:
 | 2 — Sandbox + RPC | ✅ 28 test |
 | 3 — Integrasi ADK | ✅ gerbang lolos |
 | 4 — Evaluasi | ✅ grid 10/30/60 lengkap + sapuan ukuran payload |
-| 5 — Pengerasan | ⬜ belum |
+| 5a — Jalur `direct` untuk tool destruktif | ✅ 9 test, probe negatif gagal saat disabotase |
+| 5b — Container hardening | ⬜ belum |
 
-84 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
+93 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
 
 ## Arsitektur
 
@@ -81,7 +82,7 @@ which holds the access tokens."*
 ┌─ agent.py (ADK) ───────────────────────────────┐
 │  LlmAgent(                                     │
 │    instruction=cm.instruction_provider(...),   │
-│    tools=[cm.tool])          <- SATU tool      │
+│    tools=cm.tools)   <- execute_code + direct  │
 └────────────────────────────────────────────────┘
         CodeMode
         ├── Catalog     : BaseTool[] -> katalog netral
@@ -91,6 +92,56 @@ which holds the access tokens."*
         ├── RpcBridge   : satu-satunya lapisan yang menyentuh ADK
         └── OutputGuard : bounding log -> artifact
 ```
+
+`cm.tools` = `[cm.tool, cm.direct_toolset]`. Tanpa tool destruktif, isinya
+tepat **satu** tool seperti di blog; `direct_toolset` kosong dan tidak
+menambah apa pun ke konteks.
+
+### Jalur `direct` (Fase 5, tambahan di luar blog)
+
+Blog tidak membahas tool destruktif. Masalahnya nyata: `write_file` di dalam
+kode berarti model menulis argumen yang **tidak pernah dilihat siapa pun**,
+dan `require_confirmation` ADK tidak punya tempat untuk bertanya.
+
+Solusinya memilah, bukan melarang: tool destruktif dikeluarkan dari sandbox
+dan dideklarasikan apa adanya ke model, sehingga HITL dan rantai callback
+berjalan lewat jalur bawaan ADK. Pola yang dihasilkan: `execute_code` untuk
+membaca dan menyaring, tool langsung untuk bertindak.
+
+Tiga kebijakan (`direct_policy=`), default **off** supaya hasil Fase 0-4 tidak
+berubah; `direct=["nama"]` atau predikat selalu berlaku di atasnya.
+
+Terukur pada server filesystem resmi (14 tool, semuanya beranotasi):
+
+| kebijakan | direct | tool |
+|---|---|---|
+| `off` | 0/14 | — |
+| `annotations` | 3/14 | `write_file`, `edit_file`, `move_file` |
+| `annotations-strict` | 3/14 | sama |
+
+`create_directory` **tetap di sandbox**: anotasinya `destructiveHint=false`,
+yaitu aditif. Itu memang semantik yang dimaksud spesifikasi MCP.
+
+Dua jebakan spesifikasi yang ditangani sadar:
+
+1. `destructiveHint` **default-nya true** dan hanya bermakna saat
+   `readOnlyHint == false`. Jadi "hint absen" bukan "aman". `annotations`
+   memilih pragmatis (absen → tetap di sandbox), `annotations-strict` setia
+   pada spec (absen → direct). Di server resmi keduanya sama karena anotasinya
+   lengkap; di server yang tidak menulis anotasi, `strict` bisa mengosongkan
+   sandbox sepenuhnya.
+2. Anotasi adalah **hint dari server yang mungkin tidak dipercaya**. Karena itu
+   anotasi hanya boleh memperketat: `readOnlyHint=true` tidak bisa menarik
+   tool keluar dari daftar `direct` yang diminta pemilik agent. Ada test untuk
+   ini.
+
+Penegakannya di **host**, bukan di sandbox. Nama tool direct tidak ada di
+manifest maupun deklarasi TypeScript (jalur normal → `TypeError`), dan
+`RpcBridge` menolaknya dengan `DirectOnlyError` kalau pesan protokol dipalsukan
+lewat `Deno.stdout` mentah. Kedua test itu terbukti **gagal** ketika filter
+`tool_map` disabotase — dan di `scripts/f5_gate.py` (server resmi) sabotase yang
+sama **benar-benar menulis berkas ke disk**. Lapisan manifest sendirian tidak
+cukup; risikonya terukur, bukan teoretis.
 
 Egress sandbox hanya stdio ke proses induk. Tanpa jaringan sama sekali, jadi
 tidak ada port atau kredensial yang bisa disalahgunakan — semangat yang sama
@@ -125,6 +176,9 @@ python scripts/f1_gate.py
 
 # gerbang Fase 3 - tumpukan penuh, MCP server filesystem sungguhan
 python scripts/f3_gate.py
+
+# gerbang Fase 5a - jalur direct, termasuk uji pemalsuan protokol
+python scripts/f5_gate.py
 ```
 
 Gerbang Fase 1 memakai tiga pemeriksaan, bukan satu: deklarasi harus lolos
@@ -171,17 +225,26 @@ python eval/token_proxy.py --port 20129 --upstream http://host-anda/v1
 | Tool generik | MCP-only | Penyempitan scope. `Catalog` tetap berbasis `BaseTool` |
 
 Blog **diam** soal enam hal yang ditambahkan di sini: timeout & batas call,
-bounding output, pemetaan error, daftar tool yang ditolak, harness evaluasi,
-dan jalur `direct` (ditunda).
+bounding output, pemetaan error, pemilahan tool yang tidak boleh masuk sandbox,
+harness evaluasi, dan jalur `direct` (Fase 5a, sudah ada).
+
+Satu penyimpangan berkurang maknanya: tool yang dulu **dibuang** dari katalog
+(butuh konfirmasi / kredensial interaktif) sekarang dirutekan ke `direct`, jadi
+tidak ada lagi tool yang hilang diam-diam.
 
 ## Batasan yang harus diketahui
 
 - **L1 mencegah kecelakaan, bukan penyerang.** Permission berbasis flag bukan
-  batas keamanan. Batas nyata = container atau VM (Fase 5).
+  batas keamanan. Batas nyata = container atau VM (Fase 5b, belum ada).
 - **Kode model bisa memalsukan pesan protokol** lewat `Deno.stdout` mentah
   (`console.log` dibajak, `writeSync` tidak). Sudah dianalisis: `call` palsu
   tetap dihitung host dan tetap lewat `RpcBridge`, jadi bukan eskalasi hak.
-  Konsekuensinya **semua batas ditegakkan di host**, bukan di sandbox.
+  Konsekuensinya **semua batas ditegakkan di host**, bukan di sandbox — termasuk
+  penolakan tool jalur `direct`.
+- **Anotasi MCP adalah hint, bukan jaminan.** Server yang bermusuhan bisa
+  menandai tool destruktif sebagai `readOnlyHint=true`. Karena itu `direct=`
+  eksplisit selalu menang, dan `annotations` tidak boleh dianggap kontrol
+  keamanan — hanya kenyamanan untuk server yang jujur.
 - **Tidak ada tool call paralel di lengan Python** (belum dibuat) — hanya
   relevan kalau `Codegen` Python dipakai.
 - `elicitation` / `sampling` / `roots` **tidak didukung**.

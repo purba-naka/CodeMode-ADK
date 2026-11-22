@@ -99,7 +99,7 @@ async def main() -> int:
 
     # --- laporan katalog ---
     print(f"tool          : {len(catalog.tools)}")
-    print(f"ditolak       : {len(catalog.rejected)}")
+    print(f"jalur direct  : {len(catalog.direct)}")
     print(f"server        : {catalog.servers} (single={catalog.is_single_server})")
     src_in = {s.input_source for s in catalog.tools}
     src_out = {s.output_source for s in catalog.tools}

@@ -63,6 +63,16 @@ class UnknownToolError(Exception):
     """
 
 
+class DirectOnlyError(Exception):
+    """Sandbox meminta tool yang sengaja dirutekan ke jalur `direct`.
+
+    Tidak bisa terjadi lewat jalur normal: nama itu tidak ada di manifest
+    maupun di deklarasi TypeScript. Satu-satunya cara mencapai sini adalah
+    pesan protokol yang dipalsukan lewat `Deno.stdout` mentah - jadi batasnya
+    ditegakkan di host, bukan dipercayakan ke sandbox.
+    """
+
+
 def derive_tool_context(parent: Context, *, call_id: str) -> Context:
     """ToolContext turunan untuk satu tool call di dalam sandbox.
 
@@ -119,6 +129,13 @@ class RpcBridge:
     ) -> Any:
         tool = self._tools.get((server, tool_name))
         if tool is None:
+            for d in self._catalog.direct:
+                if (d.server, d.name) == (server, tool_name):
+                    raise DirectOnlyError(
+                        f"{server}.{tool_name} tidak bisa dipanggil dari kode "
+                        f"({d.reason}). Panggil langsung sebagai tool, di luar "
+                        f"execute_code."
+                    )
             raise UnknownToolError(
                 f"tool tidak dikenal: {server}.{tool_name}. "
                 f"Tersedia: {sorted(n for _, n in self._tools)[:12]}"

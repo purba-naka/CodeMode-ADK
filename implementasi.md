@@ -479,6 +479,94 @@ Urutan ditentukan hasil Fase 4, bukan asumsi: jalur `direct` untuk tool
 destruktif → container hardening kalau akan dipakai orang lain → progressive
 disclosure kalau katalog >50 tool → prompt caching blok instruction.
 
+#### Fase 5a — jalur `direct` (SELESAI)
+
+Masalahnya bukan hipotetis. Di code mode, `write_file` dipanggil dari dalam
+kode yang ditulis model, jadi argumennya **tidak pernah dilihat siapa pun**
+sebelum berjalan, dan `require_confirmation` ADK tidak punya tempat untuk
+bertanya. Sebelum fase ini tool semacam itu hanya **dibuang** dari katalog —
+hilang diam-diam dari sudut pandang model.
+
+Keputusan: memilah, bukan melarang. Tool destruktif dikeluarkan dari sandbox
+dan dideklarasikan apa adanya ke model, sehingga HITL, rantai callback, dan
+alur kredensial berjalan lewat jalur bawaan ADK — bukan lewat replikasi kami di
+`RpcBridge`. Polanya jadi: `execute_code` untuk membaca dan menyaring, tool
+langsung untuk bertindak.
+
+Permukaan API: `CodeMode(..., direct=[...] | predikat,
+direct_policy=DirectPolicy)` dan `cm.tools` = `[cm.tool, cm.direct_toolset]`.
+Toolset, bukan list, karena isinya baru diketahui setelah `prepare()` yang
+asinkron sementara `LlmAgent(tools=[...])` dibangun sinkron. Tanpa tool
+destruktif, `direct_toolset` kosong dan konteks model tetap berisi tepat satu
+tool seperti di blog.
+
+**Tiga kebijakan, default `off`.** Default sengaja tidak mengubah apa pun dari
+Fase 0-4, supaya angka evaluasi yang sudah terbit tetap berlaku.
+
+Terukur pada server filesystem resmi — 14/14 tool beranotasi:
+
+| kebijakan | direct | tool |
+|---|---|---|
+| `off` | 0/14 | — |
+| `annotations` | 3/14 | `write_file`, `edit_file`, `move_file` |
+| `annotations-strict` | 3/14 | sama |
+
+`create_directory` **tetap di sandbox** karena anotasinya
+`destructiveHint=false` (aditif). Itu memang semantik yang dimaksud spec, dan
+kebetulan membuktikan heuristik berbasis nama ("mengandung *create* berarti
+berbahaya") akan salah di sini.
+
+**Dua jebakan spesifikasi MCP yang hampir terlewat:**
+
+1. `destructiveHint` **default-nya true**, dan hanya bermakna saat
+   `readOnlyHint == false`. Jadi "anotasi absen" tidak berarti "aman".
+   `annotations` memilih pragmatis (absen → tetap di sandbox) karena banyak
+   server tidak menulis anotasi; `annotations-strict` setia pada spec dan
+   karena itu bisa mengosongkan sandbox sepenuhnya. Di server resmi keduanya
+   sama — perbedaannya baru muncul pada server yang anotasinya tidak lengkap.
+2. Spec menyatakan anotasi adalah **hint dari server yang mungkin tidak
+   dipercaya**: *"Clients should never make tool use decisions based on
+   ToolAnnotations received from untrusted servers."* Karena itu anotasi di
+   sini hanya boleh **memperketat**, tidak pernah melonggarkan —
+   `readOnlyHint=true` tidak bisa menarik tool keluar dari daftar `direct`
+   yang diminta pemilik agent. Urutannya dipaksa di `direct_reason()`:
+   eksplisit → batasan teknis → anotasi.
+
+**Penegakan di host, dua lapis.** Nama tool direct tidak ada di manifest
+maupun di deklarasi TypeScript, jadi jalur normal gagal sebagai `TypeError` di
+sandbox. Tapi itu tidak cukup: kode model bisa memalsukan pesan `call` lewat
+`Deno.stdout` mentah. Jadi `RpcBridge` juga menolaknya dengan `DirectOnlyError`,
+dan `_tool_map` dibangun dari `catalog.tools` — bukan dari seluruh sumber.
+
+Gerbangnya bisa gagal, dan dibuktikan: filter `_tool_map` disabotase →
+`test_direct_ditolak_host_walau_protokol_dipalsukan` dan
+`test_bridge_menolak_tool_direct_secara_langsung` keduanya **gagal**. Total
+test naik 84 → 93.
+
+`scripts/f5_gate.py` menjalankan hal yang sama di server filesystem resmi
+(5 pemeriksaan). Hasil sabotase di sana lebih tegas dari yang diperkirakan:
+pemalsuan protokol **benar-benar menulis `diretas.txt` ke disk**, dengan
+`before_tool_callback` melihat `write_file` berjalan. Jadi lapisan manifest
+sendirian memang tidak cukup — risikonya terukur, bukan teoretis.
+
+Temuan yang mengubah urutan prioritas: penegakan di manifest terlihat cukup
+saat dibaca, dan hanya gerbang yang bisa gagal yang menunjukkan bahwa ia
+tidak cukup. Ini pengulangan pelajaran S2 (callback tidak jalan tanpa suara)
+di konteks berbeda.
+
+Catatan kesalahan yang sempat terjadi di fase ini: versi pertama test pemalsuan
+protokol memakai `assert not any(... for t in [])` — assertion yang **tidak
+bisa gagal**, kesalahan yang sama persis dengan dua test cacat di Fase 2.
+Diganti dengan audit `before_tool_callback` yang memeriksa tool direct tidak
+pernah masuk rantai callback.
+
+#### Fase 5b — container hardening (belum)
+
+Belum dikerjakan secara sadar, bukan karena lupa: daemon Docker tidak hidup di
+mesin ini, dan menulis jalur container yang tidak bisa dijalankan berarti
+membuat gerbang yang **tidak bisa gagal** — hal yang berulang kali jadi sumber
+kesalahan di proyek ini.
+
 ---
 
 ## 7. Risiko
@@ -530,7 +618,7 @@ kredensial tidak bisa bocor ke kode · `codemode({system, tools})` →
 
 | # | Blog | Kita | Alasan |
 |---|---|---|---|
-| D1 | Isolate V8, dikeraskan infra Cloudflare | Deno + container (Fase 5) | `workerd` lokal bukan hardened sandbox menurut dokumen Cloudflare sendiri; isolasi kuat adalah properti infra mereka |
+| D1 | Isolate V8, dikeraskan infra Cloudflare | Deno + container (Fase 5b, belum) | `workerd` lokal bukan hardened sandbox menurut dokumen Cloudflare sendiri; isolasi kuat adalah properti infra mereka |
 | D2 | Bindings (`env` berisi objek hidup) | stdio ke parent | Semangat sama (kapabilitas, bukan jaringan) dan sedikit lebih kuat: tanpa stack jaringan sama sekali. Harganya: perlu lapisan serialisasi sendiri |
 | D3 | `declare const codemode` flat | `tools.<server>.<tool>` | Tabrakan nama dengan >1 server. **Untuk run eval satu-server, pakai flat** agar tidak menambah indireksi yang blog tidak punya |
 | D4 | Tool generik, "MCP servers included" | MCP-only (scope proyek) | Penyempitan yang diminta. Diperkecil dampaknya dengan `Catalog` berbasis `BaseTool` — menambah `FunctionTool` nanti nyaris gratis |
@@ -542,8 +630,8 @@ blog tidak membahas tool destruktif, HITL, maupun apa yang terjadi saat model
 menulis loop tak berujung.
 
 timeout & batas jumlah call · bounding output + artifact · pemetaan error (raise
-vs return) · daftar tool yang ditolak · harness evaluasi · jalur `direct`
-(ditunda ke v1)
+vs return) · pemilahan tool yang tidak boleh masuk sandbox · harness evaluasi ·
+jalur `direct` (Fase 5a, sudah ada)
 
 ### Sudah dikoreksi dari draf awal
 
