@@ -340,6 +340,13 @@ tidak ada lagi tool yang hilang diam-diam.
 - `Catalog` masih memakai satu API privat ADK (`_mcp_tool.outputSchema`).
   Input schema sudah lewat jalur publik, dan kalau yang privat hilang,
   degradasinya mulus ke index signature.
+- **mcp 2.x mengubah nama field schema** dari `inputSchema`/`outputSchema`
+  menjadi `input_schema`/`output_schema`. Terukur pada server sungguhan dengan
+  mcp 2.3: **20/20 tool punya `output_schema`, 0/20 terbaca** lewat nama
+  camelCase — tipe `Output` mundur ke index signature **tanpa error**, dan
+  model jadi harus menebak bentuk hasil tool. Sekarang kedua nama dibaca,
+  dengan test regresi untuk masing-masing versi. Pelajarannya: degradasi yang
+  "mulus" tetap kegagalan senyap kalau tidak ada yang memeriksanya.
 
 ## Dokumen
 

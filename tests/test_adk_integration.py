@@ -6,6 +6,7 @@ sungguhan, persis seperti flow memanggilnya.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -631,3 +632,69 @@ async def test_precheck_default_mati():
     out = await _run(cm, agent, "await tools.tidak_ada({});")
     assert out["status"] == "error"
     assert "TypeError" in out.get("error", "")
+
+
+# ------------------- regresi: nama field MCP berubah antar versi SDK
+class _RawSnake:
+    """Bentuk `mcp.types.Tool` pada mcp 2.x - snake_case."""
+
+    def __init__(self):
+        self.input_schema = {
+            "type": "object",
+            "properties": {"full_name": {"type": "string"}},
+            "required": ["full_name"],
+        }
+        self.output_schema = {
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+            "required": ["result"],
+        }
+        self.annotations = None
+
+
+class _RawCamel:
+    """Bentuk pada mcp 1.26 - camelCase."""
+
+    def __init__(self):
+        self.inputSchema = {
+            "type": "object",
+            "properties": {"full_name": {"type": "string"}},
+        }
+        self.outputSchema = {
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+        }
+        self.annotations = None
+
+
+@pytest.mark.parametrize("raw_cls", [_RawSnake, _RawCamel])
+async def test_output_schema_terbaca_di_kedua_versi_mcp(raw_cls):
+    """mcp 2.3 mengubah `outputSchema` -> `output_schema`. Membaca satu nama
+    saja membuat tipe mundur ke index signature TANPA error - kegagalan senyap
+    yang memaksa model menebak bentuk hasil.
+
+    Terukur di server sungguhan: 20/20 tool punya output_schema, 0/20 terbaca
+    lewat nama camelCase."""
+    from codemode.catalog import SchemaSource, spec_from_tool
+
+    tool = FunctionTool(baca)
+    tool._mcp_tool = raw_cls()
+    spec = spec_from_tool(tool, "srv")
+
+    assert spec.output_source == SchemaSource.MCP_PRIVATE, (
+        f"{raw_cls.__name__}: output_schema tidak terbaca"
+    )
+    teks = json.dumps(spec.output_schema)
+    assert '"result"' in teks
+
+
+async def test_tipe_output_konkret_muncul_di_deklarasi():
+    """Probe negatif tingkat codegen: kalau output_schema hilang, deklarasi
+    jatuh ke index signature dan model kehilangan tipe hasil."""
+    tool = FunctionTool(baca)
+    tool._mcp_tool = _RawSnake()
+    cm = CodeMode({"srv": [tool]})
+    await cm.prepare()
+
+    assert "result" in cm.declarations
+    assert "structuredContent" in cm.declarations

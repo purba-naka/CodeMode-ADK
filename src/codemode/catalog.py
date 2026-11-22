@@ -6,8 +6,9 @@ Lapisan ini TIDAK tahu soal bahasa target dan TIDAK tahu soal MCP.
 Jalur pengambilan schema (lihat docs/spike-results.md S3):
   input  : _get_declaration().parameters_json_schema  <- jalur publik, identik
            dengan _mcp_tool.inputSchema
-  output : _mcp_tool.outputSchema                     <- hanya jalur privat;
-           kalau hilang, Codegen turun ke index signature
+  output : _mcp_tool.outputSchema / .output_schema    <- hanya jalur privat;
+           kalau hilang, Codegen turun ke index signature. DUA nama karena
+           mcp 2.x mengubah camelCase menjadi snake_case
 """
 
 from __future__ import annotations
@@ -168,6 +169,25 @@ def strip_meta(schema: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in schema.items() if k not in META_KEYS}
 
 
+def _mcp_field(raw: Any, *nama: str) -> Any:
+    """Ambil field MCP yang namanya BERBEDA antar versi SDK.
+
+    Terukur, bukan dugaan: `mcp` 1.26 memakai `inputSchema`/`outputSchema`
+    (camelCase), `mcp` 2.3 mengubahnya jadi `input_schema`/`output_schema`.
+    Membaca satu nama saja membuat field itu "hilang" pada versi lain **tanpa
+    error**, dan akibatnya senyap: tipe `Output` mundur ke index signature,
+    jadi model harus MENEBAK bentuk hasil tool.
+
+    Dampaknya terukur di server MCP sungguhan (mcp 2.3): 20/20 tool punya
+    `output_schema`, tapi 0/20 terbaca lewat nama camelCase.
+    """
+    for n in nama:
+        nilai = getattr(raw, n, None)
+        if nilai:
+            return nilai
+    return None
+
+
 def _defs_of(schema: dict[str, Any] | None) -> dict[str, Any]:
     """Ambil kamus definisi untuk resolusi $ref lokal."""
     if not schema:
@@ -189,8 +209,10 @@ def _extract_input(tool: BaseTool) -> tuple[dict[str, Any], SchemaSource]:
 
     # 2. jalur privat MCP
     raw = getattr(tool, "_mcp_tool", None)
-    if raw is not None and getattr(raw, "inputSchema", None):
-        return dict(raw.inputSchema), SchemaSource.MCP_PRIVATE
+    if raw is not None:
+        inp = _mcp_field(raw, "inputSchema", "input_schema")
+        if inp:
+            return dict(inp), SchemaSource.MCP_PRIVATE
 
     # 3. fallback lossy: bentuk Gemini
     if decl is not None and getattr(decl, "parameters", None) is not None:
@@ -240,7 +262,7 @@ def _extract_output(tool: BaseTool) -> tuple[dict[str, Any] | None, SchemaSource
         # Tool non-MCP (FunctionTool dll) mengembalikan nilainya langsung,
         # tanpa envelope.
         return None, SchemaSource.NONE
-    out = getattr(raw, "outputSchema", None)
+    out = _mcp_field(raw, "outputSchema", "output_schema")
     return (
         mcp_envelope(dict(out) if out else None),
         SchemaSource.MCP_PRIVATE if out else SchemaSource.GEMINI_PARAMS,
