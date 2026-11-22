@@ -238,6 +238,11 @@ Semuanya ketemu karena ditulis test yang **bisa gagal**.
 
 Prasyarat: Python 3.12, Node 22 (`npx`), Deno (`npm i -g deno`).
 
+Catatan Windows: `find_deno()` sengaja mencari `deno.exe` asli lebih dulu,
+termasuk di `%APPDATA%/npm/node_modules/deno/` yang biasanya tidak ada di
+PATH. Shim `deno.CMD` dari npm tetap jalan, tapi terukur **84 ms vs 63 ms**
+per spawn — overhead 33% pada operasi yang dijalankan tiap eksekusi.
+
 ```bash
 pip install -e ".[dev]"
 
