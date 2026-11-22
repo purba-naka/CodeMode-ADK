@@ -560,12 +560,70 @@ bisa gagal**, kesalahan yang sama persis dengan dua test cacat di Fase 2.
 Diganti dengan audit `before_tool_callback` yang memeriksa tool direct tidak
 pernah masuk rantai callback.
 
-#### Fase 5b — container hardening (belum)
+#### Fase 5b — container hardening (SELESAI)
 
-Belum dikerjakan secara sadar, bukan karena lupa: daemon Docker tidak hidup di
-mesin ini, dan menulis jalur container yang tidak bisa dijalankan berarti
-membuat gerbang yang **tidak bisa gagal** — hal yang berulang kali jadi sumber
-kesalahan di proyek ini.
+Yang dibeli: `DockerSandbox` menimpa **hanya** `_spawn()` dari `DenoSandbox`.
+Protokol stdio, pump, `OutputGuard`, batas jumlah call, dan timeout diwarisi apa
+adanya — supaya tidak ada jalur kedua yang bisa menyimpang diam-diam dari jalur
+yang sudah diuji 28 test. Untuk itu `DenoSandbox.run()` direfaktor: konstruksi
+proses dipindah ke satu method.
+
+Flag Deno `--deny-*` **tetap dipakai**. Container adalah lapisan tambahan, bukan
+pengganti — ada test yang memastikan ke-11 deny flag masih ada di argumen.
+
+**Pertanyaan yang harus dijawab gerbangnya** bukan "apakah containernya jalan",
+tapi: *apakah container benar-benar menambah batas, atau cuma menduplikasi apa
+yang sudah dilakukan flag Deno?* Karena itu tiap pemeriksaan di
+`scripts/f5b_gate.py` **sengaja melonggarkan flag Deno yang relevan**, lalu
+menuntut operasinya tetap gagal:
+
+| pemeriksaan | flag dilonggarkan | hasil |
+|---|---|---|
+| jaringan | `--allow-net` | `fetch failed` — `--network none` berarti tidak ada interface, bukan sekadar permission |
+| filesystem | `--allow-write` | tulis ke `/etc` dan `/` ditolak; tulis ke `/tmp` berhasil (tmpfs) — pembanding yang membuat hasil di atas bermakna |
+| privilege | `--allow-sys` | `uid: 1000 gid: 1000`, bukan root |
+| memori | — | alokasi 4 GiB di container 64m → proses dibunuh (exit 137) |
+
+Gerbangnya terbukti bisa gagal, dan hasilnya tegas. Dengan `--network none`,
+`--read-only`, `--memory`, dan `-u` disabotase, keempat pemeriksaan gagal
+sekaligus: `fetch` berhasil, `/etc/disusupi` dan `/runtime_baru.ts`
+**benar-benar tertulis**, prosesnya root, dan alokasi 4 GiB **selesai**.
+
+**Lubang yang ditutup, dan baru terlihat saat diukur:** sebelum fase ini memori
+**tidak dibatasi sama sekali**. `timeout_s` tidak menolong — kode rakus memori
+merusak sebelum timeout tercapai. Ini bukan skenario penyerang; `while(true)
+arr.push(...)` adalah kesalahan model biasa.
+
+Efek samping yang diperbaiki sekalian: proses yang mati tanpa mengirim
+`done`/`error` dulu hanya melaporkan `"sandbox keluar tanpa mengirim
+done/error"` — tidak memberi petunjuk apa pun. Sekarang exit code ikut
+dilaporkan, dan 137 diterjemahkan menjadi pesan batas memori yang bisa dibaca
+model. Jadi model bisa memperbaiki kodenya sendiri, bukan menebak.
+
+**Biaya, diukur bukan ditebak** (median 5-7 run, kode trivial):
+
+| | median |
+|---|---|
+| Deno lokal | **66-73 ms** |
+| Docker | **467-493 ms** |
+
+**~7x lebih lambat, +400 ms per eksekusi.** Angka ini yang menentukan
+defaultnya: `CodeMode` tetap memakai `DenoSandbox`, dan container dipilih
+eksplisit lewat `CodeMode(sandbox=DockerSandbox(...))`. Untuk eval, +400 ms per
+eksekusi tidak mengubah kesimpulan apa pun (satu eksekusi per turn, LLM-nya
+jauh lebih lambat); untuk pemakaian interaktif, itu terasa.
+
+Catatan praktik: `--memory-swap` disetel **sama dengan** `--memory` supaya swap
+nol — tanpa itu batas memori tidak benar-benar mengikat di Docker Desktop.
+`runtime.ts` di-mount read-only, bukan dicopy ke image, supaya tidak ada
+langkah build yang bisa basi terhadap sumbernya. `docker_path` bisa diarahkan
+ke `podman` (rootless, API kompatibel, lebih kuat) tanpa mengubah kode.
+
+Yang lapisan ini **tidak** selesaikan, dicatat supaya tidak salah harap:
+sandbox tetap punya stdio ke host pemegang token (itu memang desainnya, sesuai
+blog) — permukaan serangan sebenarnya adalah channel RPC; penyalahgunaan tool
+yang sah adalah urusan jalur `direct`; eksfiltrasi lewat `console.log` adalah
+urusan `OutputGuard`.
 
 ---
 
@@ -618,7 +676,7 @@ kredensial tidak bisa bocor ke kode · `codemode({system, tools})` →
 
 | # | Blog | Kita | Alasan |
 |---|---|---|---|
-| D1 | Isolate V8, dikeraskan infra Cloudflare | Deno + container (Fase 5b, belum) | `workerd` lokal bukan hardened sandbox menurut dokumen Cloudflare sendiri; isolasi kuat adalah properti infra mereka |
+| D1 | Isolate V8, dikeraskan infra Cloudflare | Deno, opsional di container (Fase 5b) | `workerd` lokal bukan hardened sandbox menurut dokumen Cloudflare sendiri; isolasi kuat adalah properti infra mereka |
 | D2 | Bindings (`env` berisi objek hidup) | stdio ke parent | Semangat sama (kapabilitas, bukan jaringan) dan sedikit lebih kuat: tanpa stack jaringan sama sekali. Harganya: perlu lapisan serialisasi sendiri |
 | D3 | `declare const codemode` flat | `tools.<server>.<tool>` | Tabrakan nama dengan >1 server. **Untuk run eval satu-server, pakai flat** agar tidak menambah indireksi yang blog tidak punya |
 | D4 | Tool generik, "MCP servers included" | MCP-only (scope proyek) | Penyempitan yang diminta. Diperkecil dampaknya dengan `Catalog` berbasis `BaseTool` — menambah `FunctionTool` nanti nyaris gratis |

@@ -150,15 +150,7 @@ class DenoSandbox:
             "violations": [],
         }
 
-        proc = await asyncio.create_subprocess_exec(
-            self._deno,
-            "run",
-            *DENY_FLAGS,
-            str(self._runtime),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await self._spawn()
 
         init = Init(
             flat=flat,
@@ -184,6 +176,20 @@ class DenoSandbox:
         finally:
             stderr = await self._terminate(proc)
 
+        # Kalau proses mati tanpa mengirim done/error, pesan "crashed" saja
+        # tidak memberi petunjuk apa pun - padahal penyebab paling sering
+        # punya tanda tangan yang jelas. 137 = SIGKILL, dan di varian container
+        # itu praktis selalu OOM killer cgroup.
+        if state["status"] == "crashed" and state["error"] is None:
+            rc = proc.returncode
+            state["error"] = (
+                "sandbox dihentikan paksa (exit 137) - hampir selalu batas "
+                "memori container terlampaui; perkecil data yang ditahan di "
+                "memori atau naikkan Hardening.memory_mb"
+                if rc == 137
+                else f"sandbox keluar tanpa mengirim done/error (exit {rc})"
+            )
+
         return Execution(
             status=state["status"],
             output=guard.render(),
@@ -195,6 +201,23 @@ class DenoSandbox:
             overflow=guard.overflow_text(),
             stderr=stderr,
             protocol_violations=state["violations"],
+        )
+
+    async def _spawn(self) -> asyncio.subprocess.Process:
+        """Satu-satunya titik yang menentukan BAGAIMANA runtime dijalankan.
+
+        Dipisah supaya varian yang dikeraskan (`DockerSandbox`) hanya perlu
+        menimpa ini - seluruh protokol, pump, dan penegakan batas di host tetap
+        sama, jadi tidak ada jalur kedua yang bisa menyimpang diam-diam.
+        """
+        return await asyncio.create_subprocess_exec(
+            self._deno,
+            "run",
+            *DENY_FLAGS,
+            str(self._runtime),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
     # ------------------------------------------------------------- internal
@@ -215,8 +238,8 @@ class DenoSandbox:
         while True:
             raw = await proc.stdout.readline()
             if not raw:
-                if state["status"] == "crashed":
-                    state["error"] = "sandbox keluar tanpa mengirim done/error"
+                # Pesan error-nya diisi di `run()` setelah proses dipanen,
+                # supaya exit code ikut dilaporkan (137 = dibunuh OOM killer).
                 return
 
             try:

@@ -68,9 +68,9 @@ Detail lengkap, termasuk kesalahan pengukuran yang sempat terjadi:
 | 3 — Integrasi ADK | ✅ gerbang lolos |
 | 4 — Evaluasi | ✅ grid 10/30/60 lengkap + sapuan ukuran payload |
 | 5a — Jalur `direct` untuk tool destruktif | ✅ 9 test, probe negatif gagal saat disabotase |
-| 5b — Container hardening | ⬜ belum |
+| 5b — Container hardening | ✅ gerbang lolos, 4 pemeriksaan lolos-saat-flag-Deno-dilonggarkan |
 
-93 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
+97 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
 
 ## Arsitektur
 
@@ -143,6 +143,41 @@ lewat `Deno.stdout` mentah. Kedua test itu terbukti **gagal** ketika filter
 sama **benar-benar menulis berkas ke disk**. Lapisan manifest sendirian tidak
 cukup; risikonya terukur, bukan teoretis.
 
+### Container hardening (Fase 5b, opsional)
+
+`CodeMode(sandbox=DockerSandbox())` menjalankan Deno di dalam container.
+Hanya `_spawn()` yang berbeda — protokol, pump, dan semua batas host diwarisi,
+jadi tidak ada jalur kedua yang bisa menyimpang. Flag `--deny-*` Deno tetap
+dipakai: container adalah lapisan **tambahan**.
+
+Yang ditegakkan kernel, bukan runtime: `--network none`, `--memory` +
+`--memory-swap` (swap nol), `--cpus`, `--pids-limit`, rootfs `--read-only` +
+satu tmpfs kecil, `--cap-drop ALL`, `no-new-privileges`, user non-root.
+
+Gerbangnya tidak bertanya "apakah containernya jalan", tapi **apakah container
+menambah batas atau cuma menduplikasi flag Deno**. Tiap pemeriksaan sengaja
+melonggarkan flag Deno yang relevan:
+
+| pemeriksaan | dilonggarkan | hasil |
+|---|---|---|
+| jaringan | `--allow-net` | `fetch failed` — tidak ada interface |
+| filesystem | `--allow-write` | `/etc` dan `/` ditolak, `/tmp` berhasil |
+| privilege | `--allow-sys` | `uid: 1000`, bukan root |
+| memori | — | alokasi 4 GiB di container 64m → exit 137 |
+
+Disabotase (`--network none`, `--read-only`, `--memory`, `-u` dicabut),
+keempatnya gagal sekaligus: `fetch` berhasil, `/etc/disusupi` **benar-benar
+tertulis**, prosesnya root, 4 GiB teralokasi.
+
+**Lubang nyata yang ditutup:** sebelum ini memori **tidak dibatasi sama
+sekali**, dan `timeout_s` tidak menolong karena kerusakan terjadi lebih dulu.
+`while(true) arr.push(...)` adalah kesalahan model biasa, bukan skenario
+penyerang.
+
+**Biaya, diukur:** median **66-73 ms** (lokal) vs **467-493 ms** (Docker) —
+~7x. Itu sebabnya bukan default. `docker_path` bisa diarahkan ke `podman`
+(rootless, API kompatibel) tanpa mengubah kode.
+
 Egress sandbox hanya stdio ke proses induk. Tanpa jaringan sama sekali, jadi
 tidak ada port atau kredensial yang bisa disalahgunakan — semangat yang sama
 dengan *bindings* Cloudflare (kapabilitas, bukan jaringan).
@@ -179,6 +214,9 @@ python scripts/f3_gate.py
 
 # gerbang Fase 5a - jalur direct, termasuk uji pemalsuan protokol
 python scripts/f5_gate.py
+
+# gerbang Fase 5b - container; butuh daemon Docker hidup
+python scripts/f5b_gate.py
 ```
 
 Gerbang Fase 1 memakai tiga pemeriksaan, bukan satu: deklarasi harus lolos
@@ -219,7 +257,7 @@ python eval/token_proxy.py --port 20129 --upstream http://host-anda/v1
 
 | Blog | Di sini | Alasan |
 |---|---|---|
-| Isolate V8 (Worker Loader) | Deno + container | `workerd` lokal bukan hardened sandbox |
+| Isolate V8 (Worker Loader) | Deno, opsional di container | `workerd` lokal bukan hardened sandbox menurut dokumen Cloudflare sendiri; isolasi kuat mereka adalah properti infra, bukan pustaka |
 | Bindings (`env` objek hidup) | stdio ke parent | Semangat sama, lebih kuat: tanpa stack jaringan |
 | `declare const codemode` flat | `tools.<server>.<tool>` | Tabrakan nama >1 server. Satu server → tetap flat |
 | Tool generik | MCP-only | Penyempitan scope. `Catalog` tetap berbasis `BaseTool` |
@@ -235,7 +273,9 @@ tidak ada lagi tool yang hilang diam-diam.
 ## Batasan yang harus diketahui
 
 - **L1 mencegah kecelakaan, bukan penyerang.** Permission berbasis flag bukan
-  batas keamanan. Batas nyata = container atau VM (Fase 5b, belum ada).
+  batas keamanan — penegaknya runtime yang sama yang menjalankan kode model.
+  Batas nyata tersedia lewat `DockerSandbox` (Fase 5b), tapi **bukan default**
+  karena ongkosnya +400 ms per eksekusi.
 - **Kode model bisa memalsukan pesan protokol** lewat `Deno.stdout` mentah
   (`console.log` dibajak, `writeSync` tidak). Sudah dianalisis: `call` palsu
   tetap dihitung host dan tetap lewat `RpcBridge`, jadi bukan eskalasi hak.

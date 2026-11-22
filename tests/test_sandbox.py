@@ -341,3 +341,114 @@ async def test_flat_tidak_membocorkan_nama_server(sb):
     r = await run(sb, "console.log(typeof tools.fs);")
     assert r.status == "done", r.error
     assert "undefined" in r.output
+
+
+# ------------------------------------------- Fase 5b: container hardening
+def _docker_ada() -> bool:
+    import shutil
+    import subprocess
+
+    if not (shutil.which("docker.exe") or shutil.which("docker")):
+        return False
+    try:
+        p = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            timeout=20,
+        )
+    except Exception:
+        return False
+    return p.returncode == 0
+
+
+def test_docker_args_memuat_semua_batas_kernel():
+    """Komposisi argumen diuji tanpa menjalankan container, supaya kalau satu
+    flag hilang dalam refactor, test ini yang gagal - bukan gerbang yang butuh
+    daemon hidup."""
+    from codemode.sandbox import DockerSandbox, Hardening
+
+    sb = DockerSandbox(
+        hardening=Hardening(memory_mb=128, cpus=0.5, pids=32, tmpfs_mb=8),
+        docker_path="docker",
+    )
+    args = sb.docker_args()
+    gabung = " ".join(args)
+
+    for wajib in (
+        "--network none",
+        "--cap-drop ALL",
+        "--security-opt no-new-privileges",
+        "--memory 128m",
+        "--memory-swap 128m",  # swap = memori -> swap nol, batas mengikat
+        "--cpus 0.5",
+        "--pids-limit 32",
+        "--read-only",
+        "--tmpfs /tmp:size=8m,exec",
+        "-u 1000:1000",
+    ):
+        assert wajib in gabung, f"hilang: {wajib}"
+
+    # runtime di-mount read-only, dan deny flag Deno TETAP dipakai: container
+    # adalah lapisan TAMBAHAN, bukan pengganti.
+    assert any(a.endswith("/runtime.ts:ro") for a in args)
+    from codemode.sandbox.deno import DENY_FLAGS
+
+    for flag in DENY_FLAGS:
+        assert flag in args, f"deny flag Deno hilang: {flag}"
+
+
+def test_docker_swap_bisa_ditimpa_eksplisit():
+    from codemode.sandbox import DockerSandbox, Hardening
+
+    sb = DockerSandbox(
+        hardening=Hardening(memory_mb=64, swap_mb=128), docker_path="docker"
+    )
+    gabung = " ".join(sb.docker_args())
+    assert "--memory 64m" in gabung
+    assert "--memory-swap 128m" in gabung
+
+
+@pytest.mark.skipif(not _docker_ada(), reason="daemon Docker tidak hidup")
+async def test_docker_menjalankan_protokol_yang_sama():
+    """Hanya `_spawn()` yang berbeda; protokol, pump, dan batas host identik."""
+    from codemode.sandbox import DockerSandbox
+
+    sb = DockerSandbox(limits=Limits(timeout_s=120, max_calls=5))
+    r = await sb.run(
+        """
+const dir = await tools.list_dir({ path: "/data" });
+console.log("entri:", dir.length, "os:", Deno.build.os);
+""",
+        manifest=MANIFEST,
+        flat=True,
+        invoke=invoker,
+    )
+    assert r.status == "done", (r.error, r.stderr)
+    assert "entri: 2" in r.output
+    assert "os: linux" in r.output  # bukti benar-benar di container
+    assert r.calls == 1
+
+
+@pytest.mark.skipif(not _docker_ada(), reason="daemon Docker tidak hidup")
+async def test_docker_batas_memori_mengikat_dan_pesannya_jelas():
+    """Lubang yang paling nyata sebelum Fase 5b: memori TIDAK dibatasi sama
+    sekali, dan timeout tidak menolong karena kerusakan terjadi lebih dulu."""
+    from codemode.sandbox import DockerSandbox, Hardening
+
+    sb = DockerSandbox(
+        limits=Limits(timeout_s=120), hardening=Hardening(memory_mb=64, tmpfs_mb=8)
+    )
+    r = await sb.run(
+        """
+const b: Uint8Array[] = [];
+for (let i = 0; i < 2000; i++) b.push(new Uint8Array(1024 * 1024).fill(1));
+console.log("TIDAK DIBATASI");
+""",
+        manifest=MANIFEST,
+        flat=True,
+        invoke=invoker,
+    )
+    assert "TIDAK DIBATASI" not in r.output
+    assert r.status != "done"
+    # Pesan harus bisa dibaca model, bukan sekadar "crashed".
+    assert "memori" in (r.error or "")
