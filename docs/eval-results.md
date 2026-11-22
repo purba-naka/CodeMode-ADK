@@ -285,3 +285,65 @@ Dua syarat agar code mode menguntungkan:
 
 Keduanya tidak disebut di blog.
 
+
+
+---
+
+## Celah metodologi yang baru ketemu saat dipakai di luar (2026-11-22)
+
+Ditemukan saat memasang `codemode-adk` ke agent ADK sungguhan terhadap server
+MCP lifecycle (`codemode-vs-direct`). Tiga hal yang eval ini **tidak** ukur,
+dan ketiganya mengubah kesimpulan praktis:
+
+### 1. Token mentah bukan biaya
+
+Seluruh angka di dokumen ini adalah **jumlah token**, input dan output
+diperlakukan sama. Harga nyata tidak begitu: output biasanya **3-5x** lebih
+mahal dari input.
+
+Terukur pada pertanyaan data-berat, 3 run per mode:
+
+| | direct | code | rasio |
+|---|---:|---:|---:|
+| token mentah (median) | 16.552 | 16.997 | 1,03x |
+| **biaya berbobot** (out x5) | 28.168 | 23.469 | **0,83x** |
+
+Arahnya berbeda. Sebabnya mekanis: direct memakai output 2.409-3.772 token
+karena model **menghitung aritmetika dalam prosa**; code mode 1.539-1.641
+karena ia menulis kode. Jadi code mode menghemat token **output**, bagian
+yang paling mahal - dan eval ini tidak pernah menyorotnya.
+
+### 2. Yang diukur hanya tengah, bukan ekor
+
+| | median | rata-rata | rentang |
+|---|---:|---:|---:|
+| direct | 16.552 | 47.154 | 16.059 - **108.851** |
+| code | 16.997 | 16.901 | 16.418 - 17.289 |
+
+Pada satu dari tiga run, direct menarik **82.662 char** mentah ke konteks -
+6,6x median-nya sendiri. Code mode mentok ~17k di ketiga run.
+
+Jadi yang dibeli code mode bukan sekadar rata-rata lebih murah, tapi
+**langit-langit**. Itu properti yang berbeda, dan untuk sistem produksi
+seringkali lebih berharga daripada rata-rata. Grid 48 run di dokumen ini
+melaporkan **jumlah** per titik, jadi properti ini tidak pernah terbaca.
+
+### 3. Kemampuan API tool adalah variabel yang tidak pernah divariasikan
+
+Mock server di `eval/mock_server.py` mengembalikan data apa adanya. Server
+sungguhan tidak: `query_table` menyediakan `columns`, `filters`, `limit`, dan
+membatasi hasil di `MAX_ROWS=100`. Akibatnya model sering memproyeksikan kolom
+sendiri, payload besar **tidak pernah terjadi**, dan code mode tidak punya apa
+pun untuk dihemat - sambil tetap membayar ~1.000-1.300 token per giliran untuk
+blok deklarasi.
+
+Ini konsisten dengan syarat yang blog Cloudflare sebutkan sendiri:
+
+> "the output of each tool call must feed into the LLM's neural network, just
+> to be copied over to the inputs of the next call... When the LLM can write
+> code, it can skip all that, and only read back the final results it needs."
+
+Kalau keluaran tool tidak perlu disalin lewat model, tidak ada yang dilewati.
+**Semakin pintar API tool-nya, semakin kecil yang dibeli code mode.** Dimensi
+ini layak masuk grid kalau eval ini dilanjutkan: sumbu "tool bodoh vs tool
+ber-agregasi", bukan hanya jumlah tool dan ukuran payload.
