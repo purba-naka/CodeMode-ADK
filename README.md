@@ -69,8 +69,9 @@ Detail lengkap, termasuk kesalahan pengukuran yang sempat terjadi:
 | 4 — Evaluasi | ✅ grid 10/30/60 lengkap + sapuan ukuran payload |
 | 5a — Jalur `direct` untuk tool destruktif | ✅ 9 test, probe negatif gagal saat disabotase |
 | 5b — Container hardening | ✅ gerbang lolos, 4 pemeriksaan lolos-saat-flag-Deno-dilonggarkan |
+| 5c — Precheck type-check | ✅ tangkapan 7/7, false positive 0/5 |
 
-97 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
+105 unit test, `ruff` bersih, `deno check` + `deno lint` bersih.
 
 ## Arsitektur
 
@@ -178,6 +179,43 @@ penyerang.
 ~7x. Itu sebabnya bukan default. `docker_path` bisa diarahkan ke `podman`
 (rootless, API kompatibel) tanpa mengubah kode.
 
+### Precheck type-check (Fase 5c, opsional)
+
+`CodeMode(precheck=True)` menjalankan `deno check` atas deklarasi + kode model
+**sebelum** sandbox dijalankan. Gagal → status `type_error`, **nol tool call**,
+model menerima diagnostik TypeScript yang tepat.
+
+Ini menyerang syarat yang Fase 4 buktikan paling menentukan: kode harus jadi di
+percobaan pertama. Tapi nilai terbesarnya bukan kecepatan — melainkan **nol efek
+samping**. Tanpa precheck, rantai yang separuhnya sah menjalankan call-call
+pertamanya lalu gagal di tengah, dan tool yang sudah jalan tidak bisa
+dibatalkan. Terukur saat gerbangnya disabotase: `list_directory` dan
+`get_file_info` tetap jalan sebelum error tipe di baris terakhir menghentikannya.
+
+| | hasil |
+|---|---|
+| tangkapan pada korpus rusak | **7/7** (TS2551/2345/2322/2353/2339) |
+| false positive pada korpus valid | **0/5** |
+
+False positive adalah kegagalan mutlak di gerbang: menolak kode yang benar
+lebih buruk daripada tidak memeriksa, karena model tidak bisa membedakan
+penolakan yang salah dari yang benar.
+
+**Biaya, dengan temuan yang mengubah cara memahaminya:** median **~750-800 ms**,
+dan itu **hampir seluruhnya startup `deno check`** — biayanya sama besar
+dengan deklarasi kosong (780 ms) maupun 14 tool (748 ms). Jadi ongkosnya tidak
+tumbuh dengan jumlah tool, dan memperkecil deklarasi tidak akan menurunkannya.
+Kode identik hampir gratis (91 ms, cache Deno), tapi snippet nyata selalu
+berbeda.
+
+**Defaultnya mati**, dua alasan: menyalakannya mengubah kondisi pengukuran
+Fase 4, dan pada model yang sudah 100% jadi-sekali ia hanya menambah ongkos.
+
+**Yang belum boleh diklaim:** manfaatnya pada tingkat jadi-sekali belum diukur
+end-to-end dengan LLM. Mengukurnya butuh model yang sering gagal — jalur
+Gemini API sudah dimatikan dan `cc/claude-sonnet-5-5` sudah 24/24, jadi tidak
+ada ruang perbaikan untuk diukur.
+
 Egress sandbox hanya stdio ke proses induk. Tanpa jaringan sama sekali, jadi
 tidak ada port atau kredensial yang bisa disalahgunakan — semangat yang sama
 dengan *bindings* Cloudflare (kapabilitas, bukan jaringan).
@@ -217,6 +255,9 @@ python scripts/f5_gate.py
 
 # gerbang Fase 5b - container; butuh daemon Docker hidup
 python scripts/f5b_gate.py
+
+# gerbang Fase 5c - precheck: tangkapan + false positive + latensi
+python scripts/f5c_gate.py
 ```
 
 Gerbang Fase 1 memakai tiga pemeriksaan, bukan satu: deklarasi harus lolos
@@ -262,9 +303,9 @@ python eval/token_proxy.py --port 20129 --upstream http://host-anda/v1
 | `declare const codemode` flat | `tools.<server>.<tool>` | Tabrakan nama >1 server. Satu server → tetap flat |
 | Tool generik | MCP-only | Penyempitan scope. `Catalog` tetap berbasis `BaseTool` |
 
-Blog **diam** soal enam hal yang ditambahkan di sini: timeout & batas call,
+Blog **diam** soal tujuh hal yang ditambahkan di sini: timeout & batas call,
 bounding output, pemetaan error, pemilahan tool yang tidak boleh masuk sandbox,
-harness evaluasi, dan jalur `direct` (Fase 5a, sudah ada).
+harness evaluasi, jalur `direct` (Fase 5a), dan precheck type-check (Fase 5c).
 
 Satu penyimpangan berkurang maknanya: tool yang dulu **dibuang** dari katalog
 (butuh konfirmasi / kredensial interaktif) sekarang dirutekan ke `direct`, jadi

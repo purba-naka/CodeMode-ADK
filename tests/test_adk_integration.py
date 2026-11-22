@@ -526,3 +526,108 @@ async def test_anotasi_hanya_memperketat_tidak_melonggarkan():
     ).prepare()
     assert cat.tools == []
     assert [d.name for d in cat.direct] == ["tulis_state"]
+
+
+# -------------------------------------------- Fase 5c: precheck type-check
+DEKLARASI = """
+interface BacaInput { path: string; head?: number }
+interface BacaOutput { teks: string }
+declare const tools: {
+  baca: (input: BacaInput) => Promise<BacaOutput>;
+};
+"""
+
+
+@pytest.fixture(scope="module")
+def checker():
+    from codemode.sandbox import TypeChecker
+
+    tc = TypeChecker(DEKLARASI)
+    yield tc
+    tc.close()
+
+
+async def test_precheck_meloloskan_kode_valid(checker):
+    r = await checker.check(
+        'const x = await tools.baca({ path: "/a", head: 2 });\nconsole.log(x.teks);'
+    )
+    assert r.ok, r.errors
+    assert r.checked
+
+
+@pytest.mark.parametrize(
+    ("nama", "kode", "ts"),
+    [
+        ("tool tidak ada", 'await tools.bacaa({ path: "/a" });', "TS2"),
+        ("argumen wajib hilang", "await tools.baca({});", "TS2345"),
+        ("tipe salah", "await tools.baca({ path: 1 });", "TS2322"),
+        (
+            "properti hasil tidak ada",
+            'const r = await tools.baca({ path: "/a" });\nconsole.log(r.tidakAda);',
+            "TS2339",
+        ),
+        (
+            "lupa await",
+            'const r = tools.baca({ path: "/a" });\nconsole.log(r.teks);',
+            "TS2339",
+        ),
+    ],
+)
+async def test_precheck_menolak_kode_rusak(checker, nama, kode, ts):
+    r = await checker.check(kode)
+    assert not r.ok, f"{nama} LOLOS padahal rusak"
+    assert ts in r.errors, r.errors
+    # Path direktori temp tidak boleh ikut terkirim ke model.
+    assert "codemode_check_" not in r.errors
+
+
+async def test_precheck_mencegah_eksekusi_dan_tool_call():
+    """Nilai utamanya bukan pesan error, tapi NOL efek samping: tanpa ini,
+    rantai yang separuhnya sah akan menjalankan call pertamanya lalu gagal di
+    tengah - dan tool yang sudah jalan tidak bisa dibatalkan."""
+    terpanggil: list[str] = []
+
+    def audit(*, tool, args, tool_context):
+        terpanggil.append(tool.name)
+        return None
+
+    cm = CodeMode(
+        {"fs": [FunctionTool(baca), FunctionTool(daftar)]},
+        limits=Limits(timeout_s=30),
+        precheck=True,
+    )
+    await cm.prepare()
+    agent = _agent(cm, before_tool_callback=audit)
+    ctx = await _ctx(agent)
+
+    kode = """
+const a = await tools.daftar({ path: "/x" });
+console.log(a);
+await tools.baca({ path: 999 });
+"""
+    out = await cm.tool.run_async(args={"code": kode}, tool_context=ctx)
+
+    assert out["status"] == "type_error", out
+    assert out["tool_calls"] == 0
+    assert terpanggil == [], terpanggil
+    assert "TIDAK dijalankan" in out["error"]
+    assert cm.report()["precheck"] == {
+        "aktif": True,
+        "dijalankan": 1,
+        "ditolak": 1,
+        "dilewati": 0,
+    }
+    await cm.close()
+
+
+async def test_precheck_default_mati():
+    """Default sengaja mati: menyalakannya mengubah kondisi pengukuran Fase 4."""
+    cm = CodeMode({"fs": [FunctionTool(baca)]}, limits=Limits(timeout_s=30))
+    await cm.prepare()
+    assert cm.report()["precheck"] == {"aktif": False}
+
+    # dan kode yang tidak lolos type-check tetap dijalankan (gagal di runtime)
+    agent = _agent(cm)
+    out = await _run(cm, agent, "await tools.tidak_ada({});")
+    assert out["status"] == "error"
+    assert "TypeError" in out.get("error", "")

@@ -15,9 +15,11 @@ from codemode.sandbox.docker import (
     find_docker,
 )
 from codemode.sandbox.output_guard import OutputGuard
+from codemode.sandbox.precheck import CheckResult, TypeChecker
 
 __all__ = [
     "DEFAULT_IMAGE",
+    "CheckResult",
     "DenoSandbox",
     "DockerSandbox",
     "Execution",
@@ -25,6 +27,7 @@ __all__ = [
     "Limits",
     "OutputGuard",
     "ToolInvoker",
+    "TypeChecker",
     "find_deno",
     "find_docker",
     "manifest_from_catalog",

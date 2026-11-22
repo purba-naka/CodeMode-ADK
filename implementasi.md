@@ -625,6 +625,80 @@ blog) — permukaan serangan sebenarnya adalah channel RPC; penyalahgunaan tool
 yang sah adalah urusan jalur `direct`; eksfiltrasi lewat `console.log` adalah
 urusan `OutputGuard`.
 
+#### Fase 5c — precheck type-check (SELESAI)
+
+Menyerang syarat yang Fase 4 buktikan paling menentukan: **kode harus jadi di
+percobaan pertama**. `gemini-3.5-flash` 8/16 dan code mode kalah 11/16;
+`cc/claude-sonnet-5-5` 24/24 dan menang telak. Yang mahal dari kegagalan bukan
+eksekusinya, tapi perbaikannya — satu putaran LLM penuh dengan deklarasi API
+dikirim ulang.
+
+`TypeChecker` menjalankan `deno check` atas deklarasi + kode model sebelum
+sandbox dijalankan. Kalau gagal: status `type_error`, **nol tool call**, dan
+model menerima diagnostik TypeScript yang tepat.
+
+**Nilai yang lebih penting dari kecepatan: nol efek samping.** Tanpa precheck,
+rantai yang separuhnya sah menjalankan call-call pertamanya lalu gagal di
+tengah — dan tool yang sudah jalan tidak bisa dibatalkan. Terukur saat
+gerbangnya disabotase: kode dengan satu error tipe di baris terakhir tetap
+menjalankan `list_directory` dan `get_file_info` lebih dulu.
+
+**Hasil gerbang** (`scripts/f5c_gate.py`, server filesystem resmi):
+
+| | hasil |
+|---|---|
+| tingkat tangkapan (korpus rusak) | **7/7** |
+| false positive (korpus valid) | **0/5** |
+
+Korpus rusak meniru kegagalan model nyata: nama tool salah (TS2551), argumen
+wajib hilang (TS2345), tipe argumen salah (TS2322), argumen tidak dikenal
+(TS2353), lupa `await` lalu akses properti (TS2339), properti hasil tidak ada
+(TS2339), tipe kembalian disalahartikan (TS2322). Korpus valid mencakup
+skenario F3 yang sudah terbukti jalan, `Promise.all`, `try/catch`, interface +
+generic, dan top-level await.
+
+False positive diperlakukan sebagai **kegagalan mutlak** di gerbang: menolak
+kode yang benar lebih buruk daripada tidak memeriksa sama sekali, karena model
+tidak punya cara membedakan penolakan yang salah dari penolakan yang benar.
+
+**Biaya, dan temuan yang mengubah cara memahaminya:**
+
+| kondisi | median |
+|---|---|
+| tanpa deklarasi sama sekali | 780 ms |
+| deklarasi 14 tool (10.271 char) | 748 ms |
+| kode identik diulang | 91 ms |
+
+Ongkosnya **hampir seluruhnya startup `deno check`, bukan type-check
+deklarasinya** — biayanya sama besar ketika deklarasinya kosong. Dua akibat
+praktis: (a) ongkos ini **tidak tumbuh** dengan jumlah tool, jadi aman di 60
+tool; (b) mengoptimalkan ukuran deklarasi tidak akan menurunkannya. Deno
+men-cache hasil berdasarkan isi berkas, jadi kode yang identik hampir gratis —
+tapi di pemakaian nyata tiap snippet berbeda, jadi angka yang jujur adalah
+**~750-800 ms per eksekusi**.
+
+Dibanding satu putaran perbaikan LLM (beberapa detik + ribuan token), itu
+murah. Dibanding spawn sandbox lokal (66-73 ms), itu 10x. Karena itu
+**defaultnya mati** (`precheck=False`), dua alasan: menyalakannya mengubah
+kondisi pengukuran Fase 4, dan pada model yang sudah 100% jadi-sekali ia hanya
+menambah ongkos tanpa manfaat. Fitur ini untuk model lemah.
+
+**Batas kejujuran:** manfaatnya pada tingkat jadi-sekali **belum diukur
+end-to-end dengan LLM**. Untuk mengukurnya butuh model yang sering gagal, dan
+jalur Gemini API sudah dimatikan sementara `cc/claude-sonnet-5-5` sudah 24/24 —
+tidak ada ruang perbaikan untuk diukur. Yang terukur sekarang: tangkapan 7/7,
+false positive 0/5, nol tool call saat ditolak. Klaim "menaikkan tingkat
+jadi-sekali" belum boleh dibuat.
+
+#### Yang sengaja TIDAK dikerjakan: memotong deklarasi di turn perbaikan
+
+Idenya: setelah turn pertama, jangan kirim ulang deklarasi penuh. Tidak
+dikerjakan karena **arah efeknya tidak jelas**: ia menghilangkan informasi tipe
+justru pada saat model sedang memperbaiki kesalahan tipe. Mengerjakannya tanpa
+pengukuran berarti menukar token dengan tingkat jadi-sekali secara buta —
+padahal Fase 4 menunjukkan tingkat jadi-sekali yang menentukan hasil, bukan
+token. Dibiarkan sebagai hipotesis, bukan fitur.
+
 ---
 
 ## 7. Risiko

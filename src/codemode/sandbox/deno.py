@@ -67,7 +67,15 @@ DENY_FLAGS = (
     "--deny-sys",
 )
 
-Status = Literal["done", "error", "timeout", "protocol_error", "crashed"]
+Status = Literal[
+    "done",
+    "error",
+    "timeout",
+    "protocol_error",
+    "crashed",
+    # Gagal type-check SEBELUM dijalankan: nol tool call, nol efek samping.
+    "type_error",
+]
 
 #: Diberi nama tool + argumen, kembalikan hasil atau lempar exception.
 ToolInvoker = Callable[[str, str, dict[str, Any]], Awaitable[Any]]

@@ -35,7 +35,13 @@ from codemode.catalog import (
     enable_json_schema_feature,
 )
 from codemode.codegen import RENDERERS
-from codemode.sandbox import DenoSandbox, Execution, Limits
+from codemode.sandbox import (
+    CheckResult,
+    DenoSandbox,
+    Execution,
+    Limits,
+    TypeChecker,
+)
 
 Source = BaseToolset | Sequence[BaseTool]
 
@@ -102,6 +108,7 @@ class CodeMode:
         sandbox: DenoSandbox | None = None,
         direct: DirectSelector | None = None,
         direct_policy: DirectPolicy = DirectPolicy.OFF,
+        precheck: bool = False,
     ) -> None:
         if language not in RENDERERS:
             raise ValueError(
@@ -113,6 +120,11 @@ class CodeMode:
         self._flat_override = flat
         self._direct = direct
         self._direct_policy = direct_policy
+        # Default OFF, disengaja: menyalakannya mengubah kondisi pengukuran
+        # Fase 4, dan angka yang sudah terbit harus tetap berlaku untuk
+        # konfigurasi yang dipakai saat mengukurnya.
+        self._precheck = precheck
+        self._checker: TypeChecker | None = None
         self._limits = limits or Limits()
         self._sandbox = sandbox or DenoSandbox(limits=self._limits)
 
@@ -122,6 +134,8 @@ class CodeMode:
         self._tool_map: dict[tuple[str, str], BaseTool] = {}
         self._lock = asyncio.Lock()
         self.executions: list[Execution] = []
+        #: Hasil tiap precheck - untuk mengukur tingkat tangkapan, bukan hiasan.
+        self.checks: list[CheckResult] = []
         #: (kode, status, error) tiap eksekusi - untuk diagnosa kegagalan.
         #: Tanpa ini, perbaikan prompt hanya tebakan.
         self.trace: list[tuple[str, str, str | None]] = []
@@ -163,6 +177,8 @@ class CodeMode:
             self._declarations = RENDERERS[self._language](
                 catalog, flat=self._flat_override
             )
+            if self._precheck and self._language == "typescript":
+                self._checker = TypeChecker(self._declarations)
             self._catalog = catalog
             return catalog
 
@@ -243,6 +259,28 @@ class CodeMode:
             if self._flat_override is None
             else self._flat_override
         )
+        # Type-check dulu. Kalau gagal: nol tool call, nol efek samping, dan
+        # model menerima diagnostik yang tepat alih-alih kegagalan runtime di
+        # tengah rantai. Precheck TIDAK pernah jadi gerbang keamanan - kalau
+        # pemeriksaannya sendiri tidak bisa jalan, eksekusi tetap lanjut.
+        if self._checker is not None:
+            cek = await self._checker.check(code)
+            self.checks.append(cek)
+            if not cek.ok:
+                gagal = Execution(
+                    status="type_error",
+                    output="",
+                    duration_ms=cek.duration_ms,
+                    error=(
+                        "kode tidak lolos type-check, jadi TIDAK dijalankan "
+                        "(tidak ada tool yang terpanggil). Perbaiki lalu kirim "
+                        f"ulang:\n{cek.errors}"
+                    ),
+                )
+                self.executions.append(gagal)
+                self.trace.append((code, gagal.status, gagal.error))
+                return gagal
+
         result = await self._sandbox.run(
             code,
             manifest=manifest,
@@ -265,9 +303,22 @@ class CodeMode:
             "servers": cat.servers if cat else [],
             "declaration_chars": len(self._declarations or ""),
             "executions": len(self.executions),
+            "precheck": (
+                {
+                    "aktif": self._checker is not None,
+                    "dijalankan": len(self.checks),
+                    "ditolak": sum(1 for c in self.checks if not c.ok),
+                    "dilewati": sum(1 for c in self.checks if not c.checked),
+                }
+                if self._precheck
+                else {"aktif": False}
+            ),
         }
 
     async def close(self) -> None:
+        if self._checker is not None:
+            self._checker.close()
+            self._checker = None
         for source in self._sources.values():
             if isinstance(source, BaseToolset):
                 await source.close()
