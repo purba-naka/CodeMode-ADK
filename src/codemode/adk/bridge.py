@@ -13,6 +13,8 @@ semuanya mati tanpa suara.
 from __future__ import annotations
 
 import copy
+import json
+import time
 import inspect
 import logging
 from typing import Any
@@ -23,6 +25,7 @@ from google.adk.tools.base_tool import BaseTool
 
 from codemode.adk.outcome import classify
 from codemode.catalog import Catalog
+from codemode.records import CallRecord
 from codemode.result import adapters_for
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,10 @@ class McpToolFailed(Exception):
     Di code mode itu fatal, karena kode sandbox membaca return value dan akan
     lanjut seolah berhasil. Jadi harus diubah jadi exception.
     """
+
+    def __init__(self, message: str, *, kind: str = "mcp_is_error"):
+        super().__init__(message)
+        self.kind = kind
 
 
 class UnknownToolError(Exception):
@@ -86,7 +93,8 @@ class RpcBridge:
         self._catalog = catalog
         self._tools = tools
         self._adapters = adapters_for(catalog)
-        self.call_log: list[tuple[str, str]] = []
+        #: Satu CallRecord per call, urut selesai (call paralel boleh menyusul).
+        self.records: list[CallRecord] = []
 
     @classmethod
     def from_pairs(
@@ -100,10 +108,35 @@ class RpcBridge:
 
         async def invoke(server: str, tool_name: str, args: dict[str, Any]) -> Any:
             counter["n"] += 1
-            self.call_log.append((server, tool_name))
-            return await self._run(
-                server, tool_name, args, tool_context, str(counter["n"])
-            )
+            call_id = str(counter["n"])
+            parent = tool_context.function_call_id or "execute_code"
+            t0 = time.monotonic()
+            kind: str | None = None
+            size = 0
+            try:
+                value = await self._run(server, tool_name, args, tool_context, call_id)
+                size = len(json.dumps(value, default=str))
+                return value
+            except McpToolFailed as err:
+                kind = err.kind
+                raise
+            except Exception as err:
+                kind = f"exception:{type(err).__name__}"
+                raise
+            finally:
+                self.records.append(
+                    CallRecord(
+                        call_id=f"{parent}#{call_id}",
+                        parent_call_id=parent,
+                        depth=1,
+                        server=server,
+                        tool=tool_name,
+                        ok=kind is None,
+                        failure_kind=kind,
+                        duration_ms=int((time.monotonic() - t0) * 1000),
+                        bytes_out=size,
+                    )
+                )
 
         return invoke
 
@@ -199,7 +232,8 @@ class RpcBridge:
         failure = classify(final, from_tool=ran_tool and altered is None)
         if failure is not None:
             raise McpToolFailed(
-                f"{server}.{tool_name} gagal [{failure.kind}]: {failure.message}"
+                f"{server}.{tool_name} gagal [{failure.kind}]: {failure.message}",
+                kind=failure.kind,
             )
 
         # Satu-satunya jalan nilai ke sandbox (lihat codemode/result.py).

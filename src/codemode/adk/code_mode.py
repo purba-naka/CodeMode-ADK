@@ -27,6 +27,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 
+from codemode.records import CallRecord
 from codemode.plan import Plan, make_plan
 from codemode.catalog import (
     Catalog,
@@ -136,6 +137,8 @@ class CodeMode:
         self._tool_map: dict[tuple[str, str], BaseTool] = {}
         self._lock = asyncio.Lock()
         self.executions: list[Execution] = []
+        #: Sumber SATU-SATUNYA untuk akuntansi call (lihat codemode/records.py).
+        self.calls: list[CallRecord] = []
         #: Hasil tiap precheck - untuk mengukur tingkat tangkapan, bukan hiasan.
         self.checks: list[CheckResult] = []
         #: (kode, status, error) tiap eksekusi - untuk diagnosa kegagalan.
@@ -289,12 +292,15 @@ class CodeMode:
                 self.trace.append((code, gagal.status, gagal.error))
                 return gagal
 
-        result = await self._sandbox.run(
-            code,
-            manifest=manifest,
-            flat=flat,
-            invoke=bridge.invoker(tool_context),
-        )
+        try:
+            result = await self._sandbox.run(
+                code,
+                manifest=manifest,
+                flat=flat,
+                invoke=bridge.invoker(tool_context),
+            )
+        finally:
+            self.calls.extend(bridge.records)
         self.executions.append(result)
         self.trace.append((code, result.status, result.error))
         return result
