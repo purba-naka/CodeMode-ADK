@@ -47,11 +47,22 @@ class ExecuteCodeTool(BaseTool):
 
         result = await self._cm.execute(code, tool_context)
 
+        # SATU-SATUNYA pintu teks bebas ke model (codemode/budget.py).
+        shown = self._cm.budget.allocate(result.output, result.value_json)
         payload: dict[str, Any] = {
             "status": result.status,
-            "output": result.output,
             "tool_calls": result.calls,
+            "output": shown["output"],
         }
+        if "result" in shown:
+            payload["result"] = shown["result"]
+        if "cut" in shown:
+            payload["cut"] = shown["cut"]
+            # Yang dipotong dari model tidak dibuang: simpan utuh sebagai artifact.
+            full = result.overflow or ""
+            if "output" in shown["cut"]:
+                full = result.output + (chr(10) + full if full else "")
+            result.overflow = full or None
         if result.error:
             payload["error"] = result.error
         if result.truncated:

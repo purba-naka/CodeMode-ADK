@@ -173,8 +173,18 @@ const init = await initPromise;
 const url = "data:application/typescript," + encodeURIComponent(init.code);
 
 try {
-  await import(url);
-  send({ t: "done" });
+  const mod = await import(url);
+  // Kanal nilai kembali: `export default <nilai>`. Satu-satunya cara selain
+  // console.log; keduanya ditimbang bersama di host (codemode/budget.py).
+  let valueJson: string | undefined;
+  if (mod.default !== undefined) {
+    try {
+      valueJson = JSON.stringify(mod.default);
+    } catch (e) {
+      valueJson = JSON.stringify(`[tidak bisa di-serialize: ${String(e)}]`);
+    }
+  }
+  send({ t: "done", value_json: valueJson ?? null });
 } catch (e) {
   const err = e instanceof Error ? e : new Error(String(e));
   send({

@@ -27,8 +27,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 
-from codemode.records import CallRecord
-from codemode.plan import Plan, make_plan
+from codemode.budget import ModelBudget
 from codemode.catalog import (
     Catalog,
     DirectPolicy,
@@ -37,6 +36,8 @@ from codemode.catalog import (
     enable_json_schema_feature,
 )
 from codemode.codegen import RENDERERS
+from codemode.plan import Plan, make_plan
+from codemode.records import CallRecord
 from codemode.sandbox import (
     CheckResult,
     DenoSandbox,
@@ -58,8 +59,11 @@ lengkapnya ada di bawah.
 
 Aturan:
 
-1. **Hanya `console.log` yang kembali kepadamu.** Nilai kembalian skrip
-   diabaikan. Yang tidak kamu log, tidak akan kamu lihat.
+1. **Dua jalan data kembali kepadamu, dan keduanya dibatasi bersama.**
+   `console.log` (untuk mengintip bentuk data) dan `export default <nilai>`
+   di akhir skrip (untuk hasil akhir - **utamakan ini**). Yang tidak kamu
+   kembalikan, tidak akan kamu lihat. Hasil yang lebih dari beberapa ribu
+   karakter dipotong.
 2. **Filter di dalam kode, jangan me-log semuanya.** Inilah gunanya mode ini:
    ambil data besar, saring, lalu log hanya yang kamu butuh. Me-log 10.000
    baris membuang keunggulannya.
@@ -111,6 +115,7 @@ class CodeMode:
         direct: DirectSelector | None = None,
         direct_policy: DirectPolicy = DirectPolicy.OFF,
         precheck: bool = False,
+        budget: ModelBudget | None = None,
     ) -> None:
         if language not in RENDERERS:
             raise ValueError(
@@ -126,6 +131,7 @@ class CodeMode:
         # Fase 4, dan angka yang sudah terbit harus tetap berlaku untuk
         # konfigurasi yang dipakai saat mengukurnya.
         self._precheck = precheck
+        self.budget = budget or ModelBudget()
         self._checker: TypeChecker | None = None
         self._limits = limits or Limits()
         self._sandbox = sandbox or DenoSandbox(limits=self._limits)

@@ -50,6 +50,10 @@ def classify(result: Any, *, from_tool: bool = True) -> Failure | None:
     # ADK FunctionTool mengembalikan {"error": ...} alih-alih melempar untuk
     # argumen buruk. Heuristik sempit: hanya kunci error (+status), supaya
     # data sah yang kebetulan punya field `error` di antara field lain aman.
-    if from_tool and isinstance(result.get("error"), str) and set(result) <= {"error", "status"}:
+    if (
+        from_tool
+        and isinstance(result.get("error"), str)
+        and set(result) <= {"error", "status"}
+    ):
         return Failure("adk_error_dict", result["error"][:1000])
     return None

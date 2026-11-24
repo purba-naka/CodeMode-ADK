@@ -64,6 +64,4 @@ class ResultAdapter:
 
 
 def adapters_for(catalog: Catalog) -> dict[tuple[str, str], ResultAdapter]:
-    return {
-        (t.server, t.name): ResultAdapter(t, catalog.shared) for t in catalog.tools
-    }
+    return {(t.server, t.name): ResultAdapter(t, catalog.shared) for t in catalog.tools}

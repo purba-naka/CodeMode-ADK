@@ -5,8 +5,8 @@ import dataclasses
 import pytest
 from google.adk.tools import FunctionTool
 
-from codemode.sandbox import Limits
 from codemode.adk import CodeMode
+from codemode.sandbox import Limits
 
 
 def alfa(x: str) -> dict:
@@ -28,8 +28,11 @@ def beta(x: str) -> dict:
 
 
 async def _plan(**kw):
-    cm = CodeMode({"s1": [FunctionTool(alfa)], "s2": [FunctionTool(beta)]},
-                  limits=Limits(timeout_s=30), **kw)
+    cm = CodeMode(
+        {"s1": [FunctionTool(alfa)], "s2": [FunctionTool(beta)]},
+        limits=Limits(timeout_s=30),
+        **kw,
+    )
     await cm.prepare()
     return cm
 
@@ -145,7 +148,9 @@ try { await tools.argumen_buruk({ path: "p" }); } catch (_) {}
     assert all(r.parent_call_id and r.call_id.startswith(r.parent_call_id) for r in rec)
     assert len({r.call_id for r in rec}) == 4  # identitas unik, paralel pun
     gagal = [r for r in rec if not r.ok]
-    assert [(g.tool, g.failure_kind) for g in gagal] == [("argumen_buruk", "adk_error_dict")]
+    assert [(g.tool, g.failure_kind) for g in gagal] == [
+        ("argumen_buruk", "adk_error_dict")
+    ]
     assert all(r.bytes_out > 0 for r in rec if r.ok)
 
 
@@ -192,3 +197,70 @@ def test_adk_berubah_gagal_keras_bukan_senyap(monkeypatch):
             adk_compat.verify()
     finally:
         adk_compat.reset_for_tests()
+
+
+# --------------------------------------------------- F6-3: ModelBudget
+from codemode.budget import CHANNELS, ModelBudget  # noqa: E402
+
+
+@pytest.mark.parametrize("log_n", [0, 10, 1500, 5000, 200_000])
+@pytest.mark.parametrize("val_n", [None, 5, 2500, 50_000])
+def test_budget_dua_kanal_tak_pernah_melebihi_jatah_total(log_n, val_n):
+    b = ModelBudget()
+    v = None if val_n is None else '"' + "x" * val_n + '"'
+    out = b.allocate("L" * log_n, v)
+    pakai = len(out["output"]) + len(out.get("result", ""))
+    assert pakai <= b.total_chars, (log_n, val_n, pakai)
+
+
+def test_budget_dua_kanal_tak_bisa_sama_sama_penuh():
+    b = ModelBudget(total_chars=1000, value_chars=900, log_chars=900)
+    out = b.allocate("L" * 5000, '"' + "v" * 5000 + '"')
+    assert len(out["output"]) + len(out["result"]) <= 1000
+    assert out["cut"] == "output,result"
+
+
+async def test_nilai_kembali_sampai_ke_model_dan_log_besar_dipotong():
+    cm = CodeMode({"s": [FunctionTool(alfa)]}, limits=Limits(timeout_s=30))
+    out = await _run(
+        cm,
+        _agent(cm),
+        """
+const r = await tools.alfa({ x: "halo" });
+console.log("z".repeat(50000));
+export default { x: r.x, n: 3 };
+""",
+    )
+    assert out["status"] == "done", out
+    assert json.loads(out["result"]) == {"x": "halo", "n": 3}
+    assert "cut" in out and "output" in out["cut"]
+    assert len(out["output"]) + len(out["result"]) <= cm.budget.total_chars
+    assert "export default" in out["output"]  # pesan potong mengajari
+
+
+async def test_tanpa_export_tidak_ada_kanal_result():
+    cm = CodeMode({"s": [FunctionTool(alfa)]}, limits=Limits(timeout_s=30))
+    out = await _run(cm, _agent(cm), 'console.log("ok");')
+    assert "result" not in out
+
+
+async def test_semua_teks_bebas_ke_model_lewat_kanal_terdaftar():
+    """Gerbang struktural: field string payload yang bisa memuat data tool
+    harus terdaftar di CHANNELS. Menambah kanal ke ExecuteCodeTool tanpa
+    mendaftarkannya (dan menimbangnya) membuat test ini gagal."""
+    cm = CodeMode({"s": [FunctionTool(alfa)]}, limits=Limits(timeout_s=30))
+    out = await _run(
+        cm,
+        _agent(cm),
+        'console.log("a".repeat(9000)); export default "b".repeat(9000);',
+    )
+    metadata = {
+        "status",
+        "tool_calls",
+        "cut",
+        "overflow_artifact",
+        "error",
+        "overflow_artifact_error",
+    }
+    liar = {k for k, v in out.items() if isinstance(v, str)} - metadata
+    assert liar <= set(CHANNELS), liar

@@ -2,7 +2,7 @@
 
 Kelas bug yang dieliminasi: akuntansi tool call yang bersumber dari callback
 ADK. Call MCP di code mode BERSARANG di dalam `execute_code`:
-    before(execute_code) > before(query_table) > after(query_table) > after(execute_code)
+    before(execute_code) > before(q) > after(q) > after(execute_code)
 Pengukur yang menulis ke "entri terakhir" menimpa entri yang salah. Itu
 persis yang terjadi: byte MCP code mode tampak 0,59x padahal 2,90x.
 

@@ -133,6 +133,8 @@ class Execution:
     truncated: bool = False
     overflow: str | None = None
     stderr: str = ""
+    #: JSON dari `export default` (kanal nilai kembali), belum ditimbang.
+    value_json: str | None = None
     protocol_violations: list[str] = field(default_factory=list)
 
     @property
@@ -224,6 +226,7 @@ class DenoSandbox:
             truncated=guard.truncated,
             overflow=guard.overflow_text(),
             stderr=stderr,
+            value_json=state.get("value_json"),
             protocol_violations=state["violations"],
         )
 
@@ -280,6 +283,7 @@ class DenoSandbox:
                 guard.add(msg.data, stream=msg.stream)
             elif isinstance(msg, Done):
                 state["status"] = "done"
+                state["value_json"] = msg.value_json
                 return
             elif isinstance(msg, Failed):
                 state["status"] = "error"

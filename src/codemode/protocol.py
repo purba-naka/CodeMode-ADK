@@ -68,6 +68,8 @@ class Log(_Msg):
 
 class Done(_Msg):
     t: Literal["done"] = "done"
+    #: JSON dari `export default`; None kalau skrip tidak mengembalikan apa pun.
+    value_json: str | None = None
 
 
 class Failed(_Msg):

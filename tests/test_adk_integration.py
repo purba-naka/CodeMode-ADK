@@ -704,7 +704,9 @@ async def test_tipe_output_konkret_muncul_di_deklarasi():
 def test_classify_semua_dialek():
     from codemode.adk.outcome import classify
 
-    assert classify({"content": [{"text": "x"}], "isError": True}).kind == "mcp_is_error"
+    assert (
+        classify({"content": [{"text": "x"}], "isError": True}).kind == "mcp_is_error"
+    )
     assert classify({"error": "arg salah"}).kind == "adk_error_dict"
     assert classify({"error": "x", "status": "e"}).kind == "adk_error_dict"
     assert classify({"error": "x", "rows": [1]}) is None  # data sah
