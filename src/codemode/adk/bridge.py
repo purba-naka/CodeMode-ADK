@@ -21,23 +21,10 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.tools.base_tool import BaseTool
 
+from codemode.adk.outcome import classify
 from codemode.catalog import Catalog
 
 logger = logging.getLogger(__name__)
-
-
-def _error_text(result: dict[str, Any]) -> str:
-    """Ambil pesan yang bisa dibaca dari envelope MCP yang gagal."""
-    blocks = result.get("content")
-    if isinstance(blocks, list):
-        texts = [
-            b["text"]
-            for b in blocks
-            if isinstance(b, dict) and isinstance(b.get("text"), str)
-        ]
-        if texts:
-            return " ".join(texts)[:1000]
-    return str(result)[:1000]
 
 
 class McpToolFailed(Exception):
@@ -170,6 +157,7 @@ class RpcBridge:
                     break
 
         # 3. jalankan tool
+        ran_tool = response is None
         if response is None:
             try:
                 response = await tool.run_async(args=args, tool_context=ctx)
@@ -206,8 +194,11 @@ class RpcBridge:
         # jadi callback memang harus tetap melihatnya. Yang berbeda hanya apa
         # yang diterima sandbox. Callback redaksi pun masih bisa membersihkan
         # `isError` dan membuat call ini dianggap berhasil.
-        if isinstance(final, dict) and final.get("isError"):
-            raise McpToolFailed(f"{server}.{tool_name} gagal: {_error_text(final)}")
+        failure = classify(final, from_tool=ran_tool and altered is None)
+        if failure is not None:
+            raise McpToolFailed(
+                f"{server}.{tool_name} gagal [{failure.kind}]: {failure.message}"
+            )
 
         return final
 

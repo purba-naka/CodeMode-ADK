@@ -698,3 +698,46 @@ async def test_tipe_output_konkret_muncul_di_deklarasi():
 
     assert "result" in cm.declarations
     assert "structuredContent" in cm.declarations
+
+
+# ------------------------------------- F6-2: satu titik klasifikasi kegagalan
+def test_classify_semua_dialek():
+    from codemode.adk.outcome import classify
+
+    assert classify({"content": [{"text": "x"}], "isError": True}).kind == "mcp_is_error"
+    assert classify({"error": "arg salah"}).kind == "adk_error_dict"
+    assert classify({"error": "x", "status": "e"}).kind == "adk_error_dict"
+    assert classify({"error": "x", "rows": [1]}) is None  # data sah
+    assert classify({"error": "x"}, from_tool=False) is None  # balasan callback
+    assert classify({"isError": True}, from_tool=False).kind == "mcp_is_error"
+    assert classify("teks") is None and classify(None) is None
+
+
+def argumen_buruk(path: str) -> dict:
+    """Tiru FunctionTool ADK yang menolak argumen dengan {"error": ...}.
+
+    Args:
+        path: lokasi berkas.
+    """
+    return {"error": "argumen tidak valid"}
+
+
+async def test_error_dict_adk_diubah_jadi_exception():
+    """Celah yang ditemukan dengan membaca kode PINTER, bukan oleh test kita:
+    ADK mengembalikan {"error": ...} alih-alih melempar, dan sebelum F6-2 itu
+    lolos ke sandbox sebagai nilai sukses."""
+    cm = CodeMode({"fs": [FunctionTool(argumen_buruk)]}, limits=Limits(timeout_s=30))
+    out = await _run(
+        cm,
+        _agent(cm),
+        """
+try {
+  await tools.argumen_buruk({ path: "/x" });
+  console.log("BUG: lanjut seolah berhasil");
+} catch (e) {
+  console.log("raised:", e.name, "|", e.message);
+}
+""",
+    )
+    assert "BUG" not in out["output"], out
+    assert "adk_error_dict" in out["output"]
