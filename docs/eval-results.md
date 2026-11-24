@@ -347,3 +347,14 @@ Kalau keluaran tool tidak perlu disalin lewat model, tidak ada yang dilewati.
 **Semakin pintar API tool-nya, semakin kecil yang dibeli code mode.** Dimensi
 ini layak masuk grid kalau eval ini dilanjutkan: sumbu "tool bodoh vs tool
 ber-agregasi", bukan hanya jumlah tool dan ukuran payload.
+
+## Baseline sebelum refactor F6 (commit 8d3f8cd)
+
+`docs/baseline/mcpcost10.txt`: 10 run x 2 mode, server MCP sungguhan. Call MCP 1,00x,
+byte MCP 1,00x (2314), waktu MCP 0,88x, wall 1,11x. Pertanyaan default `mcpcost.py`
+(list_*), bukan `query_table` - jadi rasio byte 2,90x di README codemode-vs-direct
+TIDAK direproduksi oleh pertanyaan ini; bedanya pertanyaan, bukan koreksi.
+
+KETERBATASAN: `bench10.txt` hanya berisi "WIRE_LOG belum diset". Angka token butuh proxy
+`eval/token_proxy.py` (port 20129) yang tidak dijalankan. Baseline TOKEN belum ada;
+wajib diambil sebelum F6-3 (yang mengubah plafon output).

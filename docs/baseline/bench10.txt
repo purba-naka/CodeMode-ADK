@@ -1,0 +1,1 @@
+WIRE_LOG belum diset - angka provider tidak dipakai di sini. Lihat README.
