@@ -1,0 +1,28 @@
+  run1 direct    giliran=4 calls=4 in= 14515 out=  559 total= 15074 resp_terbesar=   984 char
+  run1 codemode  giliran=4 calls=3 in= 17676 out=  627 total= 18303 resp_terbesar=   828 char
+  run2 direct    giliran=4 calls=4 in= 14529 out=  546 total= 15075 resp_terbesar=   984 char
+  run2 codemode  giliran=4 calls=3 in= 17662 out=  602 total= 18264 resp_terbesar=   828 char
+  run3 direct    giliran=4 calls=4 in= 14541 out=  533 total= 15074 resp_terbesar=   984 char
+  run3 codemode  giliran=4 calls=3 in= 17661 out=  635 total= 18296 resp_terbesar=   794 char
+  run4 direct    giliran=4 calls=4 in= 14533 out=  566 total= 15099 resp_terbesar=   984 char
+  run4 codemode  giliran=4 calls=3 in= 17674 out=  629 total= 18303 resp_terbesar=   828 char
+  run5 direct    giliran=4 calls=4 in= 14547 out=  554 total= 15101 resp_terbesar=   984 char
+  run5 codemode  giliran=4 calls=3 in= 17668 out=  618 total= 18286 resp_terbesar=   828 char
+  run6 direct    giliran=4 calls=4 in= 14553 out=  536 total= 15089 resp_terbesar=   984 char
+  run6 codemode  giliran=4 calls=3 in= 17666 out=  613 total= 18279 resp_terbesar=   828 char
+  run7 direct    giliran=4 calls=4 in= 14523 out=  556 total= 15079 resp_terbesar=   984 char
+  run7 codemode  giliran=4 calls=3 in= 17694 out=  616 total= 18310 resp_terbesar=   828 char
+  run8 direct    giliran=4 calls=4 in= 14553 out=  555 total= 15108 resp_terbesar=   984 char
+  run8 codemode  giliran=4 calls=3 in= 17672 out=  630 total= 18302 resp_terbesar=   828 char
+  run9 direct    giliran=4 calls=4 in= 14537 out=  570 total= 15107 resp_terbesar=   984 char
+  run9 codemode  giliran=4 calls=3 in= 17680 out=  625 total= 18305 resp_terbesar=   828 char
+  run10 direct    giliran=4 calls=4 in= 14549 out=  555 total= 15104 resp_terbesar=   984 char
+  run10 codemode  giliran=4 calls=3 in= 17664 out=  644 total= 18308 resp_terbesar=   794 char
+
+direct    token median=   15094 (min 15074, maks 15108) | biaya-berbobot median=    17314
+codemode  token median=   18302 (min 18264, maks 18310) | biaya-berbobot median=    20808
+
+rasio token mentah   : 1.21x
+rasio biaya (out x5) : 1.20x
+
+Sebaran lebih penting daripada selisih: lihat kolom resp_terbesar - kalau model memproyeksikan kolom sendiri, payload besar tidak pernah terjadi dan code mode tidak punya apa pun untuk dihemat.

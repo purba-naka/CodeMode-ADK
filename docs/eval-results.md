@@ -369,3 +369,22 @@ kini lewat satu titik (`adk/outcome.py`), bukan tersebar.
 
 Ditunda: F6-3 (ModelBudget + kanal nilai kembali). Mengubah plafon output = mengubah
 semua angka eval, dan baseline token belum ada (lihat bagian baseline di atas).
+
+## F6-3 terhadap baseline (bench x10, tugas list_* hasil-kecil, 4 giliran)
+
+| | sebelum (wheel lama) | sesudah F6-3 | selisih |
+|---|---:|---:|---:|
+| direct, token median (KONTROL) | 15.094 | 15.098 | +0,03% |
+| codemode, token median | 18.302 | 18.895 | **+3,2%** |
+| codemode, biaya-berbobot median | 20.808 | 21.843 | **+5,0%** |
+| rasio biaya codemode/direct | 1,20x | 1,26x | lebih buruk |
+| codemode, token maks | 18.310 | 23.533 | satu outlier |
+
+Mentah: `docs/baseline/bench10_token.txt` dan `bench10_token_after_f6.txt`.
+
+KESIMPULAN: pada beban ini F6-3 **tidak membantu, sedikit merugikan**. Plafon baru tidak
+pernah mengikat (resp_terbesar <= 984 char); yang terukur hanya biaya aturan prompt yang
+lebih panjang (+~250 token input per run). Direct stabil sebagai kontrol. Manfaat plafon
+hanya bisa terlihat pada tugas dengan hasil besar dan itu BELUM diukur - sel yang sama
+dengan "60 tool x payload besar" di daftar pending. Jangan klaim F6-3 sebagai optimasi.
+Alasan F6-3 dipertahankan adalah keamanan desain (satu pintu, tak ada kanal bebas), bukan token.
