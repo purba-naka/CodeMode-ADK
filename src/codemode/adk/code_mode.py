@@ -27,6 +27,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 
+from codemode.plan import Plan, make_plan
 from codemode.catalog import (
     Catalog,
     DirectPolicy,
@@ -130,6 +131,7 @@ class CodeMode:
 
         self._direct_tools: list[BaseTool] = []
         self._catalog: Catalog | None = None
+        self._plan: Plan | None = None
         self._declarations: str | None = None
         self._tool_map: dict[tuple[str, str], BaseTool] = {}
         self._lock = asyncio.Lock()
@@ -174,8 +176,14 @@ class CodeMode:
                         tool_map[(server, t.name)] = t
             self._tool_map = tool_map
             self._direct_tools = [d.tool for d in catalog.direct if d.tool]
+            self._plan = make_plan(
+                catalog,
+                language=self._language,
+                flat_override=self._flat_override,
+                precheck=self._precheck,
+            )
             self._declarations = RENDERERS[self._language](
-                catalog, flat=self._flat_override
+                catalog, flat=self._plan.flat
             )
             if self._precheck and self._language == "typescript":
                 self._checker = TypeChecker(self._declarations)
@@ -187,6 +195,12 @@ class CodeMode:
         if self._catalog is None:
             raise RuntimeError("panggil `await prepare()` dulu")
         return self._catalog
+
+    @property
+    def plan(self) -> Plan:
+        if self._plan is None:
+            raise RuntimeError("panggil `await prepare()` dulu")
+        return self._plan
 
     @property
     def declarations(self) -> str:
@@ -250,15 +264,9 @@ class CodeMode:
 
         catalog = await self.prepare()
         bridge = RpcBridge(catalog, self._tool_map)
-        manifest = {
-            server: [t.name for t in specs]
-            for server, specs in catalog.by_server().items()
-        }
-        flat = (
-            catalog.is_single_server
-            if self._flat_override is None
-            else self._flat_override
-        )
+        plan = self.plan
+        manifest = plan.manifest()
+        flat = plan.flat
         # Type-check dulu. Kalau gagal: nol tool call, nol efek samping, dan
         # model menerima diagnostik yang tepat alih-alih kegagalan runtime di
         # tengah rantai. Precheck TIDAK pernah jadi gerbang keamanan - kalau
