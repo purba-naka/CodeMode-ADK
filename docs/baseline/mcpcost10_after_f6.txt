@@ -1,0 +1,50 @@
+  run1 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   792ms wall=  16914ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run1 codemode  mcp_calls= 5 eksekusi= 3 resp=   2445 byte args=  171 mcp_waktu=   567ms wall=   9300ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables', 'list_tables']
+  run2 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   603ms wall=   6133ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run2 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   739ms wall=   8726ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run3 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   552ms wall=   6247ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run3 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   523ms wall=   7511ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run4 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   497ms wall=   5984ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run4 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   520ms wall=   8214ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run5 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   538ms wall=   6224ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run5 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   518ms wall=   7178ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run6 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   545ms wall=   6684ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run6 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   472ms wall=   7670ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run7 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   526ms wall=   6447ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run7 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   690ms wall=   7331ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run8 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   515ms wall=   5747ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run8 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   498ms wall=   7465ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run9 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   539ms wall=   5989ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run9 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   515ms wall=   7207ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run10 direct    mcp_calls= 4 eksekusi= 0 resp=   2314 byte args=  131 mcp_waktu=   526ms wall=   6153ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+  run10 codemode  mcp_calls= 4 eksekusi= 3 resp=   2314 byte args=  131 mcp_waktu=   471ms wall=   6974ms
+           tool: ['list_catalogs', 'list_schemas', 'list_tables', 'list_tables']
+
+direct    call MCP median= 4.0 | byte dari MCP median=    2314 | waktu MCP median=   538ms | wall median=   6189ms
+codemode  call MCP median= 4.0 | byte dari MCP median=    2314 | waktu MCP median=   519ms | wall median=   7488ms
+
+rasio call MCP   : 1.00x
+rasio byte MCP   : 1.00x
+rasio waktu MCP  : 0.96x
+rasio wall total : 1.21x
+
+Byte dari MCP adalah biaya yang TIDAK terlihat di hitungan token: di code mode byte itu masuk sandbox, bukan konteks model - tapi backend-nya tetap dibayar penuh.
