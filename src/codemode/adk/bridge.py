@@ -23,6 +23,7 @@ from google.adk.tools.base_tool import BaseTool
 
 from codemode.adk.outcome import classify
 from codemode.catalog import Catalog
+from codemode.result import adapters_for
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ class RpcBridge:
     def __init__(self, catalog: Catalog, tools: dict[tuple[str, str], BaseTool]):
         self._catalog = catalog
         self._tools = tools
+        self._adapters = adapters_for(catalog)
         self.call_log: list[tuple[str, str]] = []
 
     @classmethod
@@ -200,7 +202,8 @@ class RpcBridge:
                 f"{server}.{tool_name} gagal [{failure.kind}]: {failure.message}"
             )
 
-        return final
+        # Satu-satunya jalan nilai ke sandbox (lihat codemode/result.py).
+        return self._adapters[(server, tool_name)].deliver(final)
 
     @staticmethod
     async def _handle_error(pm, agent, tool, args, ctx, err: Exception):

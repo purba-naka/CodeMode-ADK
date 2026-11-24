@@ -54,3 +54,68 @@ async def test_explain_memuat_keputusan():
     cm = await _plan()
     teks = cm.plan.explain()
     assert "s1.alfa" in teks and "flat=" in teks
+
+
+# ------------------------------------------ F6-2: tipe janji == nilai kirim
+import json  # noqa: E402
+
+from tests.test_adk_integration import _agent, _RawSnake, _run  # noqa: E402
+
+
+class _McpTiruan(FunctionTool):
+    async def run_async(self, *, args, tool_context):
+        return {
+            "content": [{"type": "text", "text": "hai"}],
+            "structuredContent": {"result": "hai"},
+        }
+
+
+def baca_mcp(full_name: str) -> dict:
+    """tiruan.
+
+    Args:
+        full_name: nama.
+    """
+    return {}
+
+
+async def _nilai_di_sandbox(cm) -> object:
+    out = await _run(
+        cm,
+        _agent(cm),
+        'console.log(JSON.stringify(await tools.baca_mcp({ full_name: "a.b" })));',
+    )
+    assert out["status"] == "done", out
+    return json.loads(out["output"].strip().splitlines()[-1])
+
+
+def _cm_mcp() -> CodeMode:
+    tool = _McpTiruan(baca_mcp)
+    tool._mcp_tool = _RawSnake()
+    return CodeMode({"srv": [tool]}, limits=Limits(timeout_s=30))
+
+
+async def test_nilai_di_sandbox_memenuhi_tipe_yang_dijanjikan():
+    from codemode.result import adapters_for
+
+    cm = _cm_mcp()
+    cat = await cm.prepare()
+    nilai = await _nilai_di_sandbox(cm)
+    ad = adapters_for(cat)[("srv", "baca_mcp")]
+    assert ad.declared_schema() is not None
+    assert ad.conformance_errors(nilai) == []
+
+
+async def test_sabotase_deliver_tanpa_ubah_tipe_ketahuan(monkeypatch):
+    """Intinya F6-2: kelasnya hilang, bukan satu instansnya. Kalau deliver()
+    membuka envelope tapi tipe tetap menjanjikan envelope, test ini gagal."""
+    from codemode.result import ResultAdapter, adapters_for
+
+    monkeypatch.setattr(
+        ResultAdapter, "deliver", lambda self, raw: raw["structuredContent"]
+    )
+    cm = _cm_mcp()
+    cat = await cm.prepare()
+    nilai = await _nilai_di_sandbox(cm)
+    ad = adapters_for(cat)[("srv", "baca_mcp")]
+    assert ad.conformance_errors(nilai) != []
