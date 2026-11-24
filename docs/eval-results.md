@@ -358,3 +358,14 @@ TIDAK direproduksi oleh pertanyaan ini; bedanya pertanyaan, bukan koreksi.
 KETERBATASAN: `bench10.txt` hanya berisi "WIRE_LOG belum diset". Angka token butuh proxy
 `eval/token_proxy.py` (port 20129) yang tidak dijalankan. Baseline TOKEN belum ada;
 wajib diambil sebelum F6-3 (yang mengubah plafon output).
+
+## Catatan metodologis F6 (refactor `f6-refactor`)
+
+Dua celah ditemukan dengan MEMBACA kode orang lain (PINTER_ADK_REFACT), bukan oleh
+108 test kita: dialek kegagalan `{"error": ...}` milik ADK, dan desain pencatat call
+tanpa kelas bug atribusi bersarang. Gerbang menguji apa yang sudah kita pikirkan;
+tidak satu pun akan menemukan dialek yang belum terbayangkan. Karena itu kegagalan
+kini lewat satu titik (`adk/outcome.py`), bukan tersebar.
+
+Ditunda: F6-3 (ModelBudget + kanal nilai kembali). Mengubah plafon output = mengubah
+semua angka eval, dan baseline token belum ada (lihat bagian baseline di atas).

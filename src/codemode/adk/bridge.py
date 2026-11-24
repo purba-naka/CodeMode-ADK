@@ -23,6 +23,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.tools.base_tool import BaseTool
 
+from codemode.adk import adk_compat
 from codemode.adk.outcome import classify
 from codemode.catalog import Catalog
 from codemode.records import CallRecord
@@ -90,6 +91,7 @@ class RpcBridge:
     """Menjembatani tool call sandbox ke ADK, lengkap dengan rantai callback."""
 
     def __init__(self, catalog: Catalog, tools: dict[tuple[str, str], BaseTool]):
+        adk_compat.verify()
         self._catalog = catalog
         self._tools = tools
         self._adapters = adapters_for(catalog)

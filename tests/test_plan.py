@@ -168,3 +168,27 @@ def test_pencatat_naif_dari_callback_salah_pada_call_bersarang():
     after(120)  # hasil execute_code (kecil)
     byte_mcp_naif = sum(j["bytes"] for j in jejak if j["tool"] == "query_table")
     assert byte_mcp_naif == 120  # bukan 18000: bug lama terdemonstrasi
+
+
+# --------------------------------------------------- F6-5: kopling ADK
+def test_adk_terpasang_cocok_dengan_bridge():
+    from codemode.adk import adk_compat
+
+    adk_compat.reset_for_tests()
+    adk_compat.verify()
+
+
+def test_adk_berubah_gagal_keras_bukan_senyap(monkeypatch):
+    """Sabotase: ADK 'mengganti nama' salah satu atribut callback. Harus
+    ditolak saat dipakai, bukan membuat callback dilewati tanpa suara."""
+    from google.adk.agents.llm_agent import LlmAgent
+
+    from codemode.adk import adk_compat
+
+    monkeypatch.delattr(LlmAgent, "canonical_after_tool_callbacks")
+    adk_compat.reset_for_tests()
+    try:
+        with pytest.raises(adk_compat.AdkIncompatible, match="canonical_after"):
+            adk_compat.verify()
+    finally:
+        adk_compat.reset_for_tests()
